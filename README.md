@@ -12,5 +12,5 @@ file                      | description
 |
 |
 
-## Stuy design
+## Study design
 ![pQTL study overview](https://github.com/user-attachments/assets/f1b20bf4-e0bc-4cc0-8c69-9084d53adb2f)

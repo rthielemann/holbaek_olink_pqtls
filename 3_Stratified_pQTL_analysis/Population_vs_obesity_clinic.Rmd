@@ -1,0 +1,613 @@
+---
+title: "Ob_clinic_comparison"
+author: "Roman Thielemann"
+date: "2024-02-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(qqman)
+library(data.table)
+```
+
+## Select lead pQTLs from the population-based cohort
+``` {r plot_pve_tree_obclinic}
+population_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.population.cis_trans', col_names=TRUE, delim="\t", show_col_types = FALSE) 
+
+population_pve <- population_SNPs %>%
+  dplyr::filter(protein_name != "IL27") %>% ## remove IL27 due to double uniprot
+  mutate(MAF=ifelse(as.numeric(af)>0.5, as.numeric(1-as.numeric(af)), as.numeric(af))) %>% 
+  dplyr::mutate(pve =as.numeric(beta)^2/(as.numeric(beta)^2 + as.numeric(se)^2 * sample_size))
+
+population_strongest_pve <- population_pve %>% 
+  dplyr::filter(cis_trans == 'cis') %>%
+  group_by(protein_name) %>% 
+  filter(pve == max(pve)) %>%
+  arrange(pve)%>% dplyr::ungroup() 
+
+ggplot(population_strongest_pve, aes(x=reorder(protein_name, -pve), y=pve)) + geom_point() +
+  theme_bw() + theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+## Load summary statistics from the obesity clinic
+``` {r get_pQTL_chromosome}
+obclinic_folder <-  '/Users/kmd383/esrum/5_snakemake/results/2_obesity_clinic/'
+protein_files <- list.files(obclinic_folder, pattern = '.*info.filtered.sample_size')
+population_strongest_pve_ <- population_strongest_pve %>% 
+  dplyr::filter(!str_detect(protein_name, "_inf")) 
+for (protein in unique(population_strongest_pve_$protein_name)){
+  print(protein)
+ matches <- str_extract(protein_files, paste0(".*_",protein, "\\.obesity_clinic.assoc.info.filtered.sample_size")) 
+  ## remove NAs
+  protein_folder <- paste0(obclinic_folder, na.omit(matches)[1])
+  print(protein_folder)
+  
+  ## check if we already have that protein file
+  chromosome <- dplyr::filter(population_strongest_pve, protein_name == protein) %>% dplyr::select(chr)
+  files = list.files(path='/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison', pattern = paste0('^',protein, '.obesity_clinic.assoc.info.filtered.sample_size.chr', chromosome$chr))
+  print(files)
+  if (!length(files)) {
+  
+    obclinic_pqtls <- readr::read_tsv(paste0(protein_folder), show_col_types = FALSE)
+    
+    population_pqtls_1 <- population_strongest_pve %>%
+      dplyr::filter(protein_name == protein) %>%
+      dplyr::filter(!str_detect(protein_name, "_inf")) %>%
+      dplyr::mutate(across(c('chr', 'pos', 'beta'), as.numeric))
+  
+    obclinic_snp <- obclinic_pqtls %>% filter(chr == population_pqtls_1$chr)
+    write_tsv(obclinic_snp, paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/',protein,".obesity_clinic.assoc.info.filtered.sample_size.chr", population_pqtls_1$chr), col_names=TRUE)
+  }
+  }
+```
+
+## Extract lead cis-pQTL information from obesity clinic 
+```{r find_snps_subcohorts}
+all_merged <- data.frame()
+obclinic_snp_all <- data.frame()
+obclinic_folder_local <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/'
+protein_local_files <- list.files(obclinic_folder_local, pattern = '.*info.filtered.sample_size.*')
+population_strongest_pve <- population_strongest_pve %>% dplyr::filter(!str_detect(protein_name, "_inf"))
+for (protein in unique(population_strongest_pve$protein_name)){#c("Q9GZV9")){
+  chromosome <- dplyr::filter(population_strongest_pve, protein_name == protein) %>% dplyr::select(chr)
+  matches <- str_extract(protein_local_files, pattern = paste0('^',protein, "\\.obesity_clinic.assoc.info.filtered.sample_size.chr",chromosome$chr )) 
+  ## remove NAs
+  protein_folder <- paste0(obclinic_folder_local, na.omit(matches)[1])
+  print(protein_folder)
+  ## get chromosome for strongest pve2
+  
+  obclinic_pqtls <- readr::read_tsv(paste0(protein_folder), show_col_types = FALSE)
+  
+  population_pqtls_1 <- population_strongest_pve %>%
+    dplyr::filter(protein_name == protein) %>%
+    dplyr::filter(!str_detect(protein_name, "_inf")) %>%
+    dplyr::mutate(across(c('chr', 'pos', 'beta'), as.numeric))
+
+  obclinic_snp <- obclinic_pqtls %>%
+    dplyr::filter(chr == population_pqtls_1$chr, ps == population_pqtls_1$pos) %>%
+    dplyr::mutate(protein_name = protein)
+  obclinic_snp_all <- rbind(obclinic_snp_all, obclinic_snp)
+}
+write_tsv(obclinic_snp_all, '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/obclinic_snps.tsv', col_names=TRUE)
+
+```
+
+## Find SNPs that are only significant in the obesity clinic 
+```{r replication}
+population_genome_wide_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/ALL.population.nobmi.assoc.genome_wide.summary' ,col_names=TRUE, delim="\t", show_col_types = FALSE) %>%
+  dplyr::rename(pos = ps)
+## ATTENTION: added study-wide filter here ##
+obclinic_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/CLUMPED_ONLY.obesity_clinic.nobmi.assoc.genome_wide.summary.cis_trans', col_names=TRUE, delim="\t", show_col_types = FALSE) 
+
+## Compare to Study_wide population ##
+
+#Filter for phenotype and chromosome
+replication2 <- obclinic_SNPs %>%
+  left_join(.,population_SNPs, by='protein_name') %>% 
+  mutate(same_chr = ifelse((chr.x==chr.y), 1, 0)) %>%
+  mutate(pos_distance = abs(pos.x-pos.y)) %>%
+  arrange(protein_name, dplyr::desc(same_chr), pos_distance)
+
+replication2  <- replication2 %>%
+  distinct_at(vars('CHROM:POS:REF:ALT.x',protein_name), .keep_all = T) %>%
+  mutate(within1000kb=ifelse((abs(pos.x-pos.y)<=1000000 & same_chr == 1), "yes", "no" ))
+
+## Separate hits
+replicatedhits2 <- replication2 %>% filter(within1000kb == 'yes')
+newhits2 <- replication2 %>% filter(within1000kb == 'no' | is.na(within1000kb))
+
+## Compare to genome wide, unclumped populatoion ##
+replication3 <- obclinic_SNPs %>%
+  ###keep gong here
+  left_join(.,population_genome_wide_SNPs, by='protein_name') %>% 
+  mutate(same_chr = ifelse((chr.x==chr.y), 1, 0)) %>%
+  mutate(pos_distance = abs(pos.x-pos.y)) %>%
+  arrange( protein_name, dplyr::desc(same_chr), pos_distance)
+
+replication3  <- replication3 %>%
+  distinct_at(vars('CHROM:POS:REF:ALT.x',protein_name), .keep_all = T) %>%
+  mutate(within1000kb=ifelse((abs(pos.x-pos.y)<=1000000 & same_chr == 1), "yes", "no" ))
+
+## Separate hits
+replicatedhits3 <- replication3 %>% filter(within1000kb == 'yes')
+newhits3 <- replication3 %>% filter(within1000kb == 'no' | is.na(within1000kb))
+
+
+ggplot(replicatedhits2, aes(x=pos_distance)) + geom_histogram() + xlim(0,1000000)
+```
+
+## Merge lead cis-pQTLs from both cohorts 
+```{r add_newhits3}
+## This code extracts the 3 SNPs which are only significant in obesity_clinic to add them to the comparison dataframe ##
+## Tests if file exists already and only creates it if it doesn't
+if (!file.exists('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/population_snps.tsv')){
+  population_snp_all <- data.frame()
+  newhits3_folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/'
+  protein_local_files <- list.files(newhits3_folder, pattern = '.*population.assoc.info.filtered.sample_size')
+  newhits3 <- newhits3 %>% dplyr::filter(!str_detect(protein_name, "_inf")) %>% dplyr::select('CHROM:POS:REF:ALT.x':cis_trans)
+  #setwd("/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/")
+  for (protein in unique(newhits3$protein_name)){#c("Q9GZV9")){
+    print(protein)
+    matches <- str_extract(protein_local_files, pattern = paste0('^',protein, "\\.population.assoc.info.filtered.sample_size")) 
+    
+    print(matches)
+    ## remove NAs
+    protein_folder <- paste0(newhits3_folder, na.omit(matches)[1])
+    print(protein_folder)
+    ## get chromosome for strongest pve2
+    
+    population_pqtls <- readr::read_tsv(paste0(protein_folder), show_col_types = FALSE)
+    
+    newhits3_pqtls_1 <- newhits3 %>%
+      dplyr::filter(protein_name == protein) %>%
+      dplyr::filter(!str_detect(protein_name, "_inf")) %>%
+      dplyr::rename(chr = chr.x, pos = pos.x, beta = beta.x) %>%
+      dplyr::mutate(across(c('chr', 'pos', 'beta'), as.numeric))
+    population_snp <- population_pqtls %>%
+      dplyr::filter(chr == newhits3_pqtls_1$chr, ps == newhits3_pqtls_1$pos) %>%
+      dplyr::mutate(protein_name = protein)
+    population_snp_all <- rbind(population_snp_all, population_snp)
+  }
+  write_tsv(population_snp_all, '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/population_snps.tsv', col_names=TRUE)
+} else {
+  ## read in existing file
+ population_snp_all <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/population_snps.tsv' ,col_names=TRUE, delim="\t", show_col_types = FALSE)
+}
+
+## adjust the study-wide significant SNPs in the population
+obclinic_snp_all_ <-  obclinic_snp_all %>%
+  dplyr::rename(af_obclinic = af, beta_obclinic = beta , se_obclinic = se , p_wald_obclinic = p_wald, sample_size_obclinic = sample_size )
+population_strongest_pve_ <-  population_strongest_pve %>%
+  dplyr::rename(af_population = af , beta_population = beta , se_population = se , p_wald_population = p_wald, sample_size_population = sample_size )
+
+## adjust the 3 study-wide significant SNPs in the obesity clinic
+newhits3_ <- newhits3 %>%
+  dplyr::rename('CHROM:POS:REF:ALT'= 'CHROM:POS:REF:ALT.x', chr = chr.x, rs = rs.x, ps = pos.x, n_miss = n_miss.x, allele1 = allele1.x, allele0 = allele0.x,
+                af = af.x, beta = beta.x, se = se.x, logl_H1 = logl_H1.x, l_remle = l_remle.x, p_wald = p_wald.x, INFO = INFO.x, sample_size = sample_size.x,
+                genome_target = genome_target.x) %>%
+  dplyr::rename(af_obclinic = af, beta_obclinic = beta , se_obclinic = se , p_wald_obclinic = p_wald, sample_size_obclinic = sample_size) #%>%
+  #dplyr::select(-any_of(c('genome_target','tss_chr', 'tss_position', 'uniprot_id', 'spdi', 'cis_trans')))
+population_snp_all_ <-  population_snp_all %>%
+  dplyr::rename(af_population = af , beta_population = beta , se_population = se , p_wald_population = p_wald, sample_size_population = sample_size )
+population_snps <- dplyr::bind_rows(population_snp_all_, population_strongest_pve_)
+obclinic_snps <- dplyr::bind_rows(newhits3_, obclinic_snp_all_)
+## make comparison df
+comparison <- left_join(population_snps, obclinic_snps, by = c('CHROM:POS:REF:ALT','protein_name')) %>%
+  unite(cis_trans, cis_trans.x, cis_trans.y, na.rm = TRUE) %>%
+  dplyr::mutate(af_delta = af_population - af_obclinic) %>%
+  dplyr::mutate(beta_delta = beta_population - beta_obclinic ) %>% 
+  dplyr::mutate(maf_population=ifelse(as.numeric(af_population)>0.5, as.numeric(1-as.numeric(af_population)), as.numeric(af_population))) %>%
+  dplyr::mutate(maf_obclinic=ifelse(as.numeric(af_obclinic)>0.5, as.numeric(1-as.numeric(af_obclinic)), as.numeric(af_obclinic))) %>%
+  dplyr::mutate(pve2_population = 2 * as.numeric(maf_population) * (1-as.numeric(maf_population)) * as.numeric(beta_population)^2) %>%
+  dplyr::mutate(pve2_obclinic = 2 * as.numeric(maf_obclinic) * (1-as.numeric(maf_obclinic)) * as.numeric(beta_obclinic)^2) %>%
+  dplyr::mutate(pve_population =as.numeric(beta_population)^2/(as.numeric(beta_population)^2 + as.numeric(se_population)^2 * sample_size_population)) %>%
+  dplyr::mutate(pve_obclinic =as.numeric(beta_obclinic)^2/(as.numeric(beta_obclinic)^2 + as.numeric(se_obclinic)^2 * sample_size_obclinic)) %>%
+  dplyr::mutate(pve2_delta = pve2_population - pve2_obclinic) %>% 
+  dplyr::filter(p_wald_obclinic < 2.82*10^-10 | p_wald_population < 2.82*10^-10) %>% 
+  dplyr::mutate(pos = dplyr::coalesce(ps.x, pos)) %>%
+  dplyr::mutate(genome_target = dplyr::coalesce(genome_target.x, genome_target.y)) 
+  
+```
+
+## Plot: PVE and Allele frequency between population and obesity clinic
+```{r plot_pve_obclinic}
+color_population <-'#006572'
+color_obclinic <- '#fbab19'
+
+se_mult <- 1.96
+comparison <- comparison %>% filter(!grepl('_inf', protein_name))
+folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/obclinic_comparison/'
+comparison <- comparison %>%
+  # yes, if confidence interval snot overlapping
+  dplyr::mutate(beta_significant = case_when(
+    (beta_population + se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population + se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
+    (beta_population - se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population - se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
+    TRUE ~ "yes"
+  ))
+
+
+## BAR PLOT, PVE: cis only ## 
+ggplot(filter(comparison, cis_trans=='cis')) + ggtitle("PVE, cis only") +
+  geom_bar(aes(x=reorder(protein_name, -pve_population), y=pve_population), fill=color_population, stat='identity') + 
+  geom_bar(aes(x=reorder(protein_name, -pve_population), y=-pve_obclinic, ), fill=color_obclinic, stat='identity', alpha = 1) + 
+    geom_errorbar(aes(x=reorder(protein_name, -pve_population), y=-pve_population, ymin=-pve_population, ymax = -pve_population), , color="black") +
+    geom_errorbar(aes(x=reorder(protein_name, -pve_population), y=pve_population, ymin=pve_population, ymax = pve_population), , color="black") +
+  theme_linedraw(base_size = 15) +
+  #theme_bw(base_size=15) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggsave(paste0(folder, "comparison_pve_bar_cis_only.png"), device='png', width=45, height=30, dpi=300, units="cm")
+
+## Scatterplot allele frequencies
+ggplot(data = dplyr::filter(comparison, cis_trans=='cis')) + 
+  geom_point(aes(x=af_obclinic, y=af_population)) +
+  ggtitle("allele frequency, cis only") + 
+  geom_abline(intercept = 0, slope = 1) + 
+  geom_text(data=subset(comparison, abs(af_population - af_obclinic) > 0.4 ), aes(x=af_obclinic, y=af_population+0.1, label=protein_name), color='red') + 
+  annotate("text", x = 0.75, y = 0.05, label = paste0("Pearson: ",round(cor(comparison$af_population, comparison$af_obclinic), 3)))
+ggsave(paste0(folder, "allele_frequency_cis.png"), device='png', dpi=300)
+
+print(paste0("PVE median in population: ", round(median(comparison$pve_population), 4)))
+print(paste0("PVE median in obesity_clinic: ", round(median(comparison$pve_obclinic), 4)))
+
+## Beta comparison for PIgR, TRANCE, and IL1rA
+ggplot(data = dplyr::filter(comparison, cis_trans=='cis', protein_name %in% c('PIgR', 'TRANCE', 'IL1ra'))) +
+  geom_pointrange(aes(x=abs(beta_population), y=reorder(protein_name, abs(beta_population)), xmin=abs(beta_population) - se_mult*se_population, xmax=abs(beta_population) + se_mult*se_population, color = "Population"), position = position_nudge(y = -0.05)) +
+  geom_pointrange(aes(x=abs(beta_obclinic), y=reorder(protein_name, abs(beta_population)), xmin=abs(beta_obclinic) - se_mult*se_obclinic, xmax=abs(beta_obclinic) + se_mult*se_obclinic,  color = "Obesity clinic"), position = position_nudge(y = 0.05)) + 
+   scale_color_manual(name = "", values = c("Population" = color_population, "Obesity clinic" = color_obclinic)) +
+  xlab("Beta (absolute)") +
+  ylab("Proteins") +
+  theme_bw(base_size=15) +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+ggsave(paste0(folder, "holbaek3_horizontal.png"), device='png', width=7.2, height=3.3, dpi=300)
+```
+## Scatterplot BETA with heterogenetity p-values from METAL
+```{r include_metal_data}
+metal_population_obclinic <- readr::read_tsv('/Users/kmd383/holbaek/5__metal/results/3_meta_analysis/summary.meta.stderr.fdr_lead_cis_pqtls.p_val', show_col_types = FALSE)
+
+metal_population_obclinic <- metal_population_obclinic %>% dplyr::mutate(HetPVal_category = case_when(p_fdr_heterogeneity < 0.05 ~ 'fdr p < 0.05',HetPVal < 0.05 ~ 'nominal p < 0.05',.default = 'not significant')) 
+
+comparison_het <- dplyr::inner_join(comparison, metal_population_obclinic %>% dplyr::select(MarkerName, protein_name, HetPVal, HetPVal_category), by = join_by(`CHROM:POS:REF:ALT` == MarkerName, protein_name == protein_name))
+
+## Add the old beta_significant values ##
+se_mult = 1.98
+folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/obclinic_comparison/'
+comparison_het <- comparison_het %>%
+  dplyr::mutate(protein_name = gsub("IL1ra", "IL-1ra", protein_name)) %>%
+  dplyr::mutate(beta_significant_population_obclinic = case_when(
+    (beta_population + se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population + se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
+    (beta_population - se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population - se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
+    .default = "yes")) 
+
+comparison_het_ <- comparison_het %>% 
+  dplyr::mutate(HetPVal_label = case_when(
+    HetPVal_category=="fdr p < 0.05" ~ protein_name,
+    .default = ""
+  ))
+
+## Scatter beta, cis only
+group.colors <- c(`fdr p < 0.05` = "#c31609",`nominal p < 0.05` = "#F8766D", `not significant` = "darkgrey")
+ggplot(data = dplyr::filter(comparison_het_, cis_trans=='cis'), aes(x=beta_obclinic, y=beta_population, color=HetPVal_category, label=HetPVal_label)) +
+  ggtitle("beta, cis only") + 
+  geom_errorbar(aes(ymin=beta_population - se_population *se_mult, ymax= beta_population + se_population *se_mult)) +
+  geom_errorbar(aes(xmin=beta_obclinic - se_obclinic *se_mult, xmax= beta_obclinic + se_obclinic *se_mult)) +
+  geom_abline(intercept = 0, slope = 1)  + 
+  coord_fixed(xlim = c(-1.5,1.5), ylim = c(-1.5,1.5)) +
+  theme_linedraw() +
+  scale_color_manual(values=group.colors) +
+  geom_point() +
+    geom_label_repel(force = 1,# Increase the repulsion force
+                     size = 4, 
+                  box.padding = 0.5,        # Adjust padding between labels and points
+                  point.padding = 0.5,
+                  min.segment.length = 0,   # Ensure line is drawn even if label is far
+                  max.overlaps = Inf,
+                  segment.color = 'black')
+ggsave(paste0(folder, "comparison_beta_scatter_cis.heterogeneity.png"), device='png', dpi=300)
+
+```
+
+## Zoom plots for selected proteins in HOLBAEK
+```{r load_data_for_zoom}
+zoom_proteins <- comparison %>% 
+  dplyr::filter(protein_name %in% c("PIgR", "IL1ra", "TRANCE", "CXCL10")) %>%
+  dplyr::mutate(protein_name_long = gsub("\\..*", "", gsub(".*/", "", genome_target))) %>%
+  dplyr::select(chr.x, pos, protein_name, protein_name_long) %>%
+  dplyr::rename(pos.x = pos)
+
+for (protein in zoom_proteins$protein_name){
+snp_pos_ <- filter(zoom_proteins, protein_name == protein) %>% dplyr::select(pos.x)
+snp_pos <- snp_pos_$pos.x
+zoom_chromosome_ <- filter(zoom_proteins, protein_name == protein) %>% dplyr::select(chr.x)
+zoom_chromosome <- zoom_chromosome_$chr.x
+protein_name_long_ <- filter(zoom_proteins, protein_name == protein) %>% dplyr::select(protein_name_long)
+protein_name_long <- protein_name_long_$protein_name_long
+
+print(paste(protein, snp_pos, zoom_chromosome, protein_name_long))
+sum_stats_population <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/4_significant_proteins/', protein_name_long, '.population.assoc.info.filtered.sample_size')
+sum_stats_obclinic <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/4_significant_proteins/', protein_name_long, '.obesity_clinic.assoc.info.filtered.sample_size')
+
+gwasResults_population <- fread(input = sum_stats_population, sep = "\t", header = T, stringsAsFactors = F) %>% dplyr::filter(chr==zoom_chromosome)
+gwasResults_obclinic <- fread(input = sum_stats_obclinic, sep = "\t", header = T, stringsAsFactors = F) %>% dplyr::filter(chr==zoom_chromosome)
+
+gwasResults_population <- gwasResults_population %>% 
+    dplyr::rename(SNP = 'CHROM:POS:REF:ALT', BP = ps, P = 'p_wald', CHR = 'chr', ) %>% # rename for manhattan package
+    dplyr::select(SNP, CHR, BP, P, beta, af) %>%
+    dplyr::mutate(across(c(CHR, BP, P), as.numeric)) %>%
+    dplyr::mutate(P = replace(P, P == 0, 2e-308))
+
+gwasResults_obclinic <- gwasResults_obclinic %>% 
+    dplyr::rename(SNP = 'CHROM:POS:REF:ALT', BP = ps, P = 'p_wald', CHR = 'chr', ) %>% # rename for manhattan package
+    dplyr::select(SNP, CHR, BP, P, beta, af) %>%
+    dplyr::mutate(across(c(CHR, BP, P), as.numeric)) %>%
+    dplyr::mutate(P = replace(P, P == 0, 2e-308)) 
+
+gwasResults_population <- gwasResults_population %>% dplyr::mutate(cohort = 'Population')
+gwasResults_obclinic <- gwasResults_obclinic %>% dplyr::mutate(cohort = 'Obesity Clinic')
+
+gwas_results <- bind_rows(gwasResults_population,gwasResults_obclinic)%>%  
+    dplyr::rename(pos = BP, pval = P, chr = CHR, ) %>% # rename for manhattan package
+    dplyr::select(SNP, chr, pos, pval, cohort, af, beta) %>%
+    dplyr::mutate(across(c(chr, pos, pval), as.numeric)) %>%
+    dplyr::mutate(pval = replace(pval, pval == 0, 2e-308)) 
+
+# find the max beta in the region for making a colourscale
+max_beta <- filter(gwas_results, chr == zoom_chromosome, pos > snp_pos - 500000, pos < snp_pos + 500000) %>% dplyr::select(beta) %>% max()
+#max_beta = 1
+
+plot_df <- gwas_results %>% 
+  dplyr::group_by(chr) %>% 
+  # Compute chromosome size
+  dplyr::summarise(chrlength = max(pos)) %>%  
+  # Calculate cumulative position of each chromosome
+  dplyr::mutate(cumulativechrlength = cumsum(as.numeric(chrlength))-chrlength) %>% 
+  dplyr::select(-chrlength) %>%
+  # Temporarily add the cumulative length of each chromosome to the initial 
+  # dataset 
+  dplyr::left_join(gwas_results, ., by=join_by(chr)) %>%
+  # Sort by chr then position 
+  dplyr::arrange(chr, pos) %>%
+  # Add the position to the cumulative chromosome length to get the position of 
+  # this probe relative to all other probes
+  dplyr::mutate(rel_pos = pos + cumulativechrlength) %>%
+  # Calculate the logged p-value too
+  dplyr::mutate(logged_p = -log10(pval)) %>%
+  dplyr::select(-cumulativechrlength)
+
+
+maxp <- ceiling(max(plot_df$logged_p, na.rm = TRUE))
+
+# Make upper plot
+pdf(NULL)
+upper_plot <- ggplot() + 
+  geom_point(data = plot_df[which(plot_df$cohort == 'Population'),], 
+             aes(x = rel_pos, y = logged_p, color = abs(beta)), 
+             size = 2) +
+  scale_x_continuous(limits = c(snp_pos-500000, snp_pos+500000)) +
+  scale_y_continuous(limits = c(0, maxp), 
+                     expand = expansion(mult = c(0.05, 0.05))) + 
+  geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "solid", 
+             size = 0.3) +
+  geom_hline(yintercept = -log10(5e-8), color = "red", linetype = "solid", 
+             size = 0.3) +
+  labs(x = "", y = bquote(atop('Population', '-log'[10]*'(p)'))) + 
+  theme_linedraw() +
+  theme(#legend.position, 
+        axis.title.x = element_blank()) + 
+  scale_color_viridis_c(limits = c(0, max_beta)) 
+
+# Make lower plot
+lower_plot <- ggplot() + 
+  geom_point(data = plot_df[which(plot_df$cohort == 'Obesity Clinic'),], 
+             aes(x = rel_pos, y = logged_p, color = abs(beta)), 
+             size = 2) +
+  scale_x_continuous(limits = c(snp_pos-500000, snp_pos+500000), 
+                     position = "top") +
+  scale_y_reverse(limits = c(maxp, 0), 
+                     expand = expansion(mult = c(0.05, 0.05))) + 
+  geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "solid", 
+             size = 0.3) +
+  geom_hline(yintercept = -log10(5e-8), color = "red", linetype = "solid", 
+             size = 0.3) +
+  labs(x = "", y = bquote(atop('Obesity Clinic', '-log'[10]*'(p)'))) + 
+  theme_linedraw() +
+  theme(#legend.position = "none", 
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()) + 
+  scale_color_viridis_c(limits = c(0, max_beta)) 
+
+p <- gridExtra::grid.arrange(upper_plot, lower_plot, nrow = 2)
+output_ggplot <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/4_significant_proteins/plots/',protein,'.miami.zoom.ggplot.png')
+
+ggsave(output_ggplot, plot=p, device='png',width=14, height=8, dpi=300, units="cm")
+}
+```
+
+## Zoom plots for obesity replication in UKB
+```{r zoom_plots_ukb_beta}
+## currently running for downsampled not_obese (n~8000)
+not_obese_snp_all <- data.frame()
+obese_snp_all <- data.frame()
+## select isgnificant proteins
+zoom_proteins <- comparison %>% 
+  dplyr::filter(protein_name %in% c("PIgR", "IL1ra", "TRANCE", "SPON2", "CXCL10")) %>%
+  dplyr::mutate(protein_name_long = gsub("\\..*", "", gsub(".*/", "", genome_target))) %>%
+  dplyr::select(chr.x, pos, protein_name, protein_name_long) %>%
+  dplyr::rename(pos.x = pos) %>%
+  dplyr::mutate(protein_name_ukb = case_when(
+    protein_name == "IL1ra" ~ "il1rn",
+    protein_name == "TRANCE" ~ "tnfsf11",
+    .default = as.character(tolower(protein_name))
+))
+
+for (protein in zoom_proteins$protein_name_ukb){
+snp_pos_ <- filter(zoom_proteins, protein_name_ukb == protein) %>% dplyr::select(pos.x)
+snp_pos <- snp_pos_$pos.x
+zoom_chromosome_ <- filter(zoom_proteins, protein_name_ukb == protein) %>% dplyr::select(chr.x)
+zoom_chromosome <- zoom_chromosome_$chr.x
+
+print(paste(protein, snp_pos, zoom_chromosome))
+sum_stats_population <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/10_ukb_obesity_replication/sumstats/downsampled_not_obese/', protein, '.ukb_not_obese_downsampled.assoc.info.filtered')
+sum_stats_obclinic <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/10_ukb_obesity_replication/sumstats/', protein, '.ukb_obese.assoc.info.filtered')
+
+gwasResults_population <- fread(input = sum_stats_population, sep = "\t", header = T, stringsAsFactors = F) %>% dplyr::filter(CHROM==zoom_chromosome)
+gwasResults_obclinic <- fread(input = sum_stats_obclinic, sep = "\t", header = T, stringsAsFactors = F) %>% dplyr::filter(CHROM==zoom_chromosome)
+
+gwasResults_population <- gwasResults_population %>% 
+    dplyr::mutate(P = pchisq(CHISQ, 1, lower.tail = FALSE)) %>%
+    dplyr::rename(SNP = ID, BP = GENPOS, CHR = CHROM, beta = BETA, af = A1FREQ) %>% # rename for manhattan package
+    dplyr::select(SNP, CHR, BP, P, beta, af, SE) %>%
+    dplyr::mutate(across(c(CHR, BP, P), as.numeric)) %>%
+    dplyr::mutate(P = replace(P, P == 0, 2e-308))
+
+gwasResults_obclinic <- gwasResults_obclinic %>% 
+    dplyr::mutate(P = pchisq(CHISQ, 1, lower.tail = FALSE)) %>%
+    dplyr::rename(SNP = ID, BP = GENPOS, CHR = CHROM, beta = BETA, af = A1FREQ) %>% # rename for manhattan package
+    dplyr::select(SNP, CHR, BP, P, beta, af, SE) %>%
+    dplyr::mutate(across(c(CHR, BP, P), as.numeric)) %>%
+    dplyr::mutate(P = replace(P, P == 0, 2e-308)) 
+
+## extract lead cis-pQTLs for later analysis
+not_obese_pqtl <- gwasResults_population %>% dplyr::filter(CHR == zoom_chromosome, BP == snp_pos)
+not_obese_pqtl$protein_name = protein
+not_obese_snp_all <- rbind(not_obese_snp_all, not_obese_pqtl)
+
+obese_pqtl <- gwasResults_obclinic %>% dplyr::filter(CHR == zoom_chromosome, BP == snp_pos)
+obese_pqtl$protein_name = protein
+obese_snp_all <- rbind(obese_snp_all, obese_pqtl)
+
+
+gwasResults_population <- gwasResults_population %>% dplyr::mutate(cohort = 'Population')
+gwasResults_obclinic <- gwasResults_obclinic %>% dplyr::mutate(cohort = 'Obesity Clinic')
+
+gwas_results <- bind_rows(gwasResults_population,gwasResults_obclinic)%>%  
+    dplyr::rename(pos = BP, pval = P, chr = CHR, ) %>% # rename for manhattan package
+    dplyr::select(SNP, chr, pos, pval, cohort, af, beta) %>%
+    dplyr::mutate(across(c(chr, pos, pval), as.numeric)) %>%
+    dplyr::mutate(pval = replace(pval, pval == 0, 2e-308)) 
+
+# find the max beta in the region for making a colourscale
+max_beta <- filter(gwas_results, chr == zoom_chromosome, pos > snp_pos - 500000, pos < snp_pos + 500000) %>% dplyr::select(beta) %>% max()
+#max_beta = 1
+
+plot_df <- gwas_results %>% 
+  dplyr::group_by(chr) %>% 
+  # Compute chromosome size
+  dplyr::summarise(chrlength = max(pos)) %>%  
+  # Calculate cumulative position of each chromosome
+  dplyr::mutate(cumulativechrlength = cumsum(as.numeric(chrlength))-chrlength) %>% 
+  dplyr::select(-chrlength) %>%
+  # Temporarily add the cumulative length of each chromosome to the initial 
+  # dataset 
+  dplyr::left_join(gwas_results, ., by=join_by(chr)) %>%
+  # Sort by chr then position 
+  dplyr::arrange(chr, pos) %>%
+  # Add the position to the cumulative chromosome length to get the position of 
+  # this probe relative to all other probes
+  dplyr::mutate(rel_pos = pos + cumulativechrlength) %>%
+  # Calculate the logged p-value too
+  dplyr::mutate(logged_p = -log10(pval)) %>%
+  dplyr::select(-cumulativechrlength)
+
+
+maxp <- ceiling(max(plot_df$logged_p, na.rm = TRUE))
+
+# Make upper plot
+pdf(NULL)
+upper_plot <- ggplot() + 
+  geom_point(data = plot_df[which(plot_df$cohort == 'Population'),], 
+             aes(x = rel_pos, y = logged_p, color = abs(beta)), 
+             size = 2) +
+  scale_x_continuous(limits = c(snp_pos-500000, snp_pos+500000)) +
+  scale_y_continuous(limits = c(0, maxp), 
+                     expand = expansion(mult = c(0.05, 0.05))) + 
+  geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "solid", 
+             size = 0.3) +
+  geom_hline(yintercept = -log10(5e-8), color = "red", linetype = "solid", 
+             size = 0.3) +
+  labs(x = "", y = bquote(atop('UKB BMI < 30', '-log'[10]*'(p)'))) + 
+  theme_linedraw() +
+  theme(#legend.position, 
+        axis.title.x = element_blank()) + 
+  scale_color_viridis_c(limits = c(0, max_beta)) 
+
+# Make lower plot
+lower_plot <- ggplot() + 
+  geom_point(data = plot_df[which(plot_df$cohort == 'Obesity Clinic'),], 
+             aes(x = rel_pos, y = logged_p, color = abs(beta)), 
+             size = 2) +
+  scale_x_continuous(limits = c(snp_pos-500000, snp_pos+500000), 
+                     position = "top") +
+  scale_y_reverse(limits = c(maxp, 0), 
+                     expand = expansion(mult = c(0.05, 0.05))) + 
+  geom_hline(yintercept = -log10(1e-5), color = "blue", linetype = "solid", 
+             size = 0.3) +
+  geom_hline(yintercept = -log10(5e-8), color = "red", linetype = "solid", 
+             size = 0.3) +
+  labs(x = "", y = bquote(atop('UKB BMI > 30', '-log'[10]*'(p)'))) + 
+  theme_linedraw() +
+  theme(#legend.position = "none", 
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank()) + 
+  scale_color_viridis_c(limits = c(0, max_beta)) 
+
+p <- gridExtra::grid.arrange(upper_plot, lower_plot, nrow = 2)
+output_ggplot <- paste0('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/11_ukb_obesity_replication/',protein,'.miami.zoom.ggplot.png')
+
+ggsave(output_ggplot, plot=p, device='png',width=14, height=8, dpi=300, units="cm")
+}
+```
+
+## Further plots for obesity replication in UKB
+```{r replication_obesity}
+obese_snp_all_ <- obese_snp_all %>%
+  dplyr::rename(beta_obese = beta, af_obese = af, p_obese = P, se_obese = SE)
+not_obese_snp_all_ <- not_obese_snp_all %>%
+  dplyr::rename(beta_not_obese = beta, af_not_obese = af, p_not_obese = P, se_not_obese = SE)
+replication_obesity <- dplyr::inner_join(obese_snp_all_, not_obese_snp_all_, by=join_by("CHR"=="CHR","BP"=="BP", "SNP"=="SNP","protein_name"=="protein_name"))
+
+
+se_mult <- 1.96
+
+replication_obesity <- replication_obesity %>% filter(!grepl('_inf', protein_name))
+folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/11_ukb_obesity_replication/'
+replication_obesity <- replication_obesity %>%
+  # yes, if confidence interval snot overlapping
+  dplyr::mutate(beta_significant = case_when(
+    (beta_not_obese + se_mult * se_not_obese > beta_obese - se_mult * se_obese & beta_not_obese + se_mult * se_not_obese < beta_obese + se_mult * se_obese) ~ "no",
+    (beta_not_obese - se_mult * se_not_obese > beta_obese - se_mult * se_obese & beta_not_obese - se_mult * se_not_obese < beta_obese + se_mult * se_obese) ~ "no",
+    TRUE ~ "yes"))
+
+group.colors <- c(no = "#2166AC", yes = "#B2182B")
+p <- ggplot(data = replication_obesity, aes(x=beta_obese, y=beta_not_obese, color=beta_significant)) +
+  geom_point() +
+  ggtitle("beta, cis only") + 
+  geom_pointrange(aes(ymin=beta_not_obese - se_not_obese *se_mult, ymax= beta_not_obese + se_not_obese *se_mult)) +
+  geom_pointrange(aes(xmin=beta_obese - se_obese *se_mult, xmax= beta_obese + se_obese *se_mult)) +
+  geom_abline(intercept = 0, slope = 1)  + 
+  coord_fixed(xlim = c(-1,1), ylim = c(-1,1)) +
+  theme_linedraw() +
+  scale_color_manual(values=group.colors) +
+  geom_label_repel( data=replication_obesity, aes(label=protein_name), size=4) 
+
+plot(p)
+ggsave(paste0(folder, "replication_obesity_beta_scatter_cis.downsampled.png"), device='png', dpi=300)
+
+## Significant 30
+ggplot(replication_obesity %>% dplyr::filter(protein_name != "spon2")) +
+  geom_pointrange(aes(x=abs(beta_not_obese), y=reorder(protein_name, abs(beta_not_obese)), xmin=abs(beta_not_obese) - se_mult*se_not_obese, xmax=abs(beta_not_obese) + se_mult*se_not_obese, color = "UKB not obese (BMI < 30)"), position = position_nudge(y = -0.05)) +
+  geom_pointrange(aes(x=abs(beta_obese), y=reorder(protein_name, abs(beta_not_obese)), xmin=abs(beta_obese) - se_mult*se_obese, xmax=abs(beta_obese) + se_mult*se_obese,  color = "UKB obese (BMI > 30)"), position = position_nudge(y = 0.05)) + 
+   scale_color_manual(name = "", values = c("UKB not obese (BMI < 30)" = "#19b474", "UKB obese (BMI > 30)" = "#fbe119")) +
+  xlab("Beta (absolute)") +
+  ylab("Proteins") +
+  theme_bw(base_size=15) +
+  theme(panel.border = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+ggsave(paste0(folder, "replication3_horizontal.downsampled.png"), device='png', width=8, height=3.3, dpi=300)
+```
+

@@ -1,0 +1,196 @@
+localrules:
+	all
+
+configfile:	"config/config.nobmi.population.yaml"
+
+rule all:
+	input:
+		expand("results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.cis_trans", cohort_folder=config['cohort_folder']))
+
+## 1. Postprocessing of GWAS summary statistics generated with GEMMA 0.98.3
+rule create_identifier:
+	input:
+		"data/{sample}.assoc.txt"
+	output:
+		temporary("results/{sample}.assoc.tmp")
+	shell:
+		"""
+		awk -F '\\t' 'FNR == 1 {{print "CHROM:POS:REF:ALT" FS $0;next}} \
+		$2 ~ /^rs/ {{split($2,a,":"); print a[2]":"a[3]":"$6":"$5 FS a[2] FS a[1] FS a[3] FS $4 FS $5 FS $6 FS $7 FS $8 FS $9 FS $10 FS $11 FS $12}} \
+		$2 !~ /^rs/ {{split($2,a,":"); print a[1]":"a[2]":"a[3]":"a[4] FS a[1] FS $2 FS a[2] FS $4 FS $5 FS $6 FS $7 FS $8 FS $9 FS $10 FS $11 FS $12}}' \
+		{input} > {output}
+		"""
+
+rule merge_info:
+	input:
+		assoc="results/{sample}.assoc.tmp",
+		info="data/vcf.info.identifier"
+	output:
+		temporary("results/{sample}.assoc.info")
+	threads:
+		2
+	shell:
+		"""
+		awk -F '\\t' 'NR==FNR{{a[$1]=$7;}} NR!=FNR{{print $0 FS a[$1]}}' {input.info} {input.assoc} > {output}
+		"""
+
+rule filter_maf_info:
+	input:
+		"results/{sample}.assoc.info"
+	output:
+		"results/{sample}.assoc.info.filtered"
+	shell:
+		"awk -F '\\t' '(NR==1){{print $0}}(($8 >= 0.01)&&($8 <= 0.99)){{print $0}}' {input} |"
+		"awk -F '\\t' '(NR==1){{print $0;next}}($14 >= 0.7){{print $0}}' > {output}"
+
+rule singlecohort_add_sample_size:
+	input:
+		assoc="results/{sample}.assoc.info.filtered",
+		log="data/{sample}.log.txt",
+	output:
+		assoc="results/{sample}.assoc.info.filtered.sample_size"
+	shell:
+		"""
+		sample_size=$(grep '## number of analyzed individuals =' {input.log} | sed 's/## number of analyzed individuals = //')
+		awk -F '\\t' -v awkvar="$sample_size" 'FNR == 1 {{print $0 FS "sample_size";next}}{{print $0 FS awkvar}}' {input.assoc} > {output.assoc}
+		"""
+
+rule singlecohort_genome_wide:
+	input:
+		"results/{sample}.assoc.info.filtered.sample_size"
+	output:
+		"results/{sample}.assoc.genome_wide"
+	shell:
+		"""
+		protein_target={wildcards.sample}
+		protein_name=`echo {wildcards.sample} | sed 's/.*_\(nobmi\|bmi\)_//g' | sed 's/\.\(population\|obesity_clinic\)//g'`
+		echo $protein_name
+		awk -F '\\t' -v my_var="$protein_name" 'FNR == 1 {{print $0 FS "genome_target" FS "protein_name";next}} $13 < 5e-8 {{print $0 FS "{wildcards.sample}" FS my_var}}' {input} > {output}
+		"""
+
+## 2. Clumping summary statistics with PLINK
+rule singlecohort_preclump_MHC:
+	input:
+		"results/{sample}.assoc.genome_wide"
+	output:
+		temporary("results/{sample}.assoc.genome_wide.preclumped")
+	script:
+		"scripts/preclump_mhc.R"
+	
+rule singlecohort_clump_meta_p:
+	input:
+		"results/{sample}.assoc.genome_wide.preclumped"
+	output:
+		tmp=temporary("results/{sample}.assoc.genome_wide.tmp.clumped"),
+		clumped="results/{sample}.assoc.genome_wide.clumped",
+		log=temporary("results/{sample}.assoc.genome_wide.tmp.log"),
+		nosex=temporary("results/{sample}.assoc.genome_wide.tmp.nosex")
+	params:
+		# this is added, because plink adds the .clumped prefix automatically
+		outfile="results/{sample}.assoc.genome_wide.tmp"
+	shell:
+		"""
+		module load plink/1.9.0
+		echo ' CHR    F               SNP         BP        P    TOTAL   NSIG    S05    S01   S001  S0001    SP2' > {output.tmp}
+		plink --bfile /projects/holbaek-AUDIT/people/kmd383/0_data/1_genetics/plink/holbaek.autosomes.maf0_01.info_0.7.plink1/autosomes \
+			--clump-p1 5e-8 \
+			--maf 0.01 \
+			--clump-r2 0.2 --clump-kb 500 \
+			--clump-snp-field 'CHROM:POS:REF:ALT' \
+			--clump-field 'p_wald' \
+			--clump {input} \
+			--out {params.outfile}
+		protein_target={wildcards.sample}
+		protein_name=`echo {wildcards.sample} | sed 's/.*_\(nobmi\|bmi\)_//g'`
+		grep -v -e '^$' {output.tmp} | \
+		awk -F '\\t' -v protein_name="$protein_name" -v protein_target="$protein_target" 'FNR == 1 {{print $0 FS "genome_target" FS "protein_name";next}} {{print $0 FS protein_target FS protein_target}}' > {output.clumped} 
+		"""
+
+rule singlecohort_summarize_clumped_data:
+	input:
+		expand("results/{sample}.assoc.genome_wide.clumped", sample=config['samples'])
+	output:
+		"results/{cohort_folder}/ALL.nobmi.assoc.genome_wide.clumped.summary"
+	shell:
+		"""
+		>{output}
+		sed 's/ \{{1,\}}/\t/g' {input} | \
+			sed 's/^\t//g' | \
+			sed '/^CHR/d' | \
+			awk '(NF > 1) {{print $0}}' >> {output}
+		"""
+
+## 3. Further annotating clumped data (TSS, cis/trans)
+rule singlecohort_clumped_effect_frequency:
+	input:
+		clumped="results/{cohort_folder}/ALL.nobmi.assoc.genome_wide.clumped.summary",
+		gw="results/{cohort_folder}/ALL.nobmi.assoc.genome_wide.summary"
+	output:
+		"results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary"
+	shell:
+	# merge on variant name ($1,$3) and target name ($19, $13)
+		"""
+		echo 'CHROM:POS:REF:ALT	chr	rs	ps	n_miss	allele1	allele0	af	beta	se	logl_H1	l_remle	p_wald	INFO	sample_size	genome_target	protein_name' > {output}
+		awk -F '\\t' 'NR==FNR{{a[$1$16]=$0;}} NR!=FNR{{print a[$3$13]}}' {input.gw} {input.clumped} >> {output}
+		"""
+
+rule singlecohort_merge_clumped_TSS:
+	input:
+		sumstats=expand("results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary", cohort_folder=config['cohort_folder']),
+		tss="data/olink_TSS.extended.txt"
+	output:
+		"results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.tss"
+	shell:
+		"""
+		echo 'CHROM:POS:REF:ALT	chr	rs	ps	n_miss	allele1	allele0	af	beta	se	logl_H1	l_remle	p_wald	INFO	sample_size	genome_target	protein_name	tss_chr	tss_position	uniprot_id' > {output}
+		awk -F '\\t' 'NR==FNR{{a[$5]=$4 FS $1 FS $3;}} NR!=FNR{{print $0 FS a[$17]}}' {input.tss} {input.sumstats} | awk 'NR!=1' >> {output} 
+		"""
+
+rule singlecohort_add_spdi:
+	input:
+		"results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.tss"
+	output:
+		temporary("results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.tss.tmp")
+	shell:
+		"""
+		echo 'CHROM:POS:REF:ALT	chr	rs	pos	n_miss	allele1	allele0	af	beta	se	logl_H1	l_remle	p_wald	INFO	sample_size	genome_target	protein_name	tss_chr	tss_position	uniprot_id	spdi' > {output}
+		awk -F '\\t' '{{split($1,a,":");}} (FNR != 1){{print $0 FS a[1]":"a[2]-1":"a[3]":"a[4]}}' {input} >> {output} 
+		"""
+
+rule singlecohort_calculate_cis_trans:
+	input:
+		"results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.tss.tmp"
+	output:
+		"results/{cohort_folder}/CLUMPED_ONLY.nobmi.assoc.genome_wide.summary.cis_trans"
+	script:
+		"scripts/cis_trans.R"
+
+rule summarize_gw_data_singlecohort:
+	input:
+		expand("results/{sample}.assoc.genome_wide", sample=config['samples'])
+	output:
+		expand("results/{cohort_folder}/ALL.nobmi.assoc.genome_wide.summary", cohort_folder=config['cohort_folder'])
+	shell:
+		"""
+		echo 'CHROM:POS:REF:ALT	chr	rs	ps	n_miss	allele1	allele0	af	beta	se	logl_H1	l_remle	p_wald	INFO	sample_size	genome_target	protein_name' > {output}
+		sed '/^CHROM/d' {input} >> {output}
+		"""
+
+## 4. Assessing genomic inflation
+rule calculate_lambda:
+	input:
+		"results/{sample}.assoc.info.filtered"
+	output:
+		lambDa="results/{sample}.lambda.tsv"
+	script:
+		"scripts/lambda.R"
+
+rule summarize_lambda:
+	input:
+		expand("results/{sample}.lambda.tsv", sample=config['samples'])
+	output:
+		expand("results/{cohort_folder}/SUMMARY_lambda", cohort_folder=config['cohort_folder'])
+	shell:
+		"""
+		cat {input} >> {output}
+		"""

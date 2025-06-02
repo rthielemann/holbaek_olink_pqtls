@@ -1,0 +1,319 @@
+---
+title: "One-sample Mendelian Randomization"
+author: "Roman Thielemann"
+date: "2025-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ivreg)
+```
+
+## Prepare genotypes, proteins and cardiometabolic traits for 1SMR
+```{r select_traits}
+## Load preprocessed genotypes, clinical and proteomic data 
+lm_1smr <- read.delim("1_data/MR_phenotypes_proteins_genotypes.tsv", sep = "\t")
+## Select proteins and cardiometabolic traits to include
+predictorVars <- colnames(dplyr::select(lm_1smr, IL8:HAOX1))
+lm_1smr[predictorVars] <- scale(lm_1smr[predictorVars])
+outcomeVars <- c("ALAT", "ASAT", "GGT", "LDH", "bilirubin", "chol_total", "chol_ldl", "chol_hdl", "triglycerides", "hs_CRP_SSI", "leucocytes", "cpeptid_2015", "glucose", "HbA1c", "insulin", "glucagon", "glp1", "Bas_Phos", "HOMA")
+dplyr::mutate(lm_1smr, across(outcomeVars, ~ as.numeric(.x)))
+# log transform non-normally distributed outcomeVars
+lm_1smr[paste('log', outcomeVars, sep = '_')] <- log(lm_1smr[outcomeVars])
+z_outcomeVars <- c("bp_sys_z", "bp_dia_z", "log_ALAT", "log_ASAT",  "log_GGT", "log_LDH", "log_bilirubin", "log_chol_total","log_chol_ldl", "log_chol_hdl", "log_triglycerides", "log_hs_CRP_SSI", "log_leucocytes",  "log_cpeptid_2015","log_glucose", "log_HbA1c" , "log_insulin", "log_glucagon", "log_glp1", "log_Bas_Phos", "log_HOMA")
+# scaled to have mean 0 and sd 1
+lm_1smr[z_outcomeVars] <- scale(lm_1smr[z_outcomeVars])
+traits <- z_outcomeVars
+
+## Get most significant cis-pQTLs from meta-analysis for 90 proteins with study-wide significant proteins
+clumped_genome_wide <- read_tsv('/projects/holbaek-AUDIT/people/kmd383/5__metal/results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.annotated') %>% dplyr::rename(p_val = 'P-value') %>% dplyr::filter(!grepl("inf",protein_name))
+cis_for_1SMR <- clumped_genome_wide %>% 
+  dplyr::filter(p_val < 2.82 * 10^-10) %>%
+  dplyr::filter(cis_trans == "cis") %>%
+  group_by(protein_name) %>%
+  slice(which.min(p_val)) %>% # Keep the row with the lowest pval in each group
+  ungroup() 
+
+write.table(cis_for_1SMR$MarkerName, file = "/projects/holbaek-AUDIT/people/kmd383/16_snp_cmr_associations/1_data/snps_1SMR.txt", sep = ",", row.names = FALSE, col.names = FALSE, quote=FALSE) 
+
+## Create a data frame for SNP and protein pairs
+snp_pro_pairs <- cis_for_1SMR %>%
+  dplyr::select(MarkerName, protein_name) %>%
+  dplyr::mutate(MarkerName = paste0("X", MarkerName)) %>%
+  dplyr::mutate(MarkerName = gsub(":",".", MarkerName)) %>%
+  dplyr::mutate(protein_name = gsub("_",".", protein_name))
+
+```
+
+## Run 1SMR with ivreg 0.6-5 
+``` {r 1smr}
+## Run 1SMR in the population cohort
+# Loop through proteins and cardiometabolic traits
+formula_list <- list()
+for(i in 1:nrow(snp_pro_pairs)) {
+  snp <- snp_pro_pairs$MarkerName[i]
+  protein <- snp_pro_pairs$protein_name[i]
+  for(trait in traits) {
+    # Construct the formula for the ivreg function
+    formula_str <- paste0(trait, "~ `", protein, "` + z_age + sex + zz_BMI + blood_sample_year + genotype_batch + C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10 | `", snp,
+                          "` + z_age + sex + zz_BMI + blood_sample_year + genotype_batch + C1 + C2 + C3 + C4 + C5 + C6 + C7 + C8 + C9 + C10")
+    # add formula to the list
+    formula_list[[paste0(snp, "_", protein, "_", trait)]] <- formula_str
+  }
+}
+# Run IV regression for each formula and store the model
+lm_1smr_population <- dplyr::filter(lm_1smr, ob_clinic == 0,  pat_ID != 1431) %>% dplyr::mutate(across(IL8:HAOX1, ~ qnorm((rank(.x, na.last = "keep") - 0.5) / sum(!is.na(.x))))) 
+model_list <- lapply(formula_list, function(f) {
+  fit <- ivreg(as.formula(f), data = lm_1smr_population )
+  return(fit)
+})
+# Extract the second row (corresponding to your instrumental variable) of coefficients for each model
+coefficients_list <- lapply(model_list, function(model) {
+  coef(summary(model))[2, ]
+})
+# Extract the fourth column (corresponding to the sensitivity analysis p-values) of coefficients for each model
+sensitivty_list <- lapply(model_list, function(model) {
+  summary(model, diagnostics = T)$diagnostics[,4]
+})
+# Extract the weak instrument statistic
+weak_instrument_statistic <- lapply(model_list, function(model) {
+  summary(model, diagnostics = T)$diagnostics[1,3]
+})
+# Combine the formulas and the extracted coefficients into a single data frame
+iv_population <- data.frame(
+  formula = names(formula_list),
+  formula_long = unlist(unname(formula_list)),
+  coefficients = do.call(rbind, coefficients_list),
+  sensitivity = do.call(rbind, sensitivty_list),
+  weak_instrument_statistic = do.call(rbind, weak_instrument_statistic)
+)
+iv_all_population <- iv_population %>%
+  dplyr::rename(beta = "coefficients.Estimate") %>%
+  dplyr::rename(se = "coefficients.Std..Error") %>%
+  dplyr::rename(pvalue = "coefficients.Pr...t..") %>%
+  dplyr::rename(weak_instruments = "sensitivity.Weak.instruments") %>%
+  dplyr::rename(wu_hausman = "sensitivity.Wu.Hausman") %>%
+  dplyr::rename(sargan = "sensitivity.Sargan") %>%
+  dplyr::select(-"coefficients.t.value") %>%
+  dplyr::mutate(CI_lower = (beta - 1.96 * se)) %>%
+  dplyr::mutate(CI_upper = (beta + 1.96 * se)) %>%
+  dplyr::mutate(snp = str_extract(formula, "^[^_]+"),
+    protein = sapply(str_split(formula, "_"), `[`, 2)) %>%
+  dplyr::mutate(trait = gsub("^[^_]+_[^_]+_", "", formula)) %>%
+  dplyr::mutate(protein = gsub("\\.","_", protein)) %>%
+    dplyr::mutate(
+              Outcome = case_when(
+      grepl("mr_liver_fat", formula) ~ "Liver Fat %",
+      grepl("ALAT", formula) ~ "ALT",
+      grepl("ASAT", formula) ~ "AST",
+      grepl("Bas_Phos", formula) ~ "ALP",
+      grepl("GGT", formula) ~ "GGT",
+      grepl("log_LDH", formula) ~ "LDH",
+      grepl("bilirubin", formula) ~ "Bilirubin",
+      grepl("chol_hdl", formula) ~ "HDL-C",
+      grepl("chol_ldl", formula) ~ "LDL-C",
+      grepl("chol_total", formula) ~ "TC",
+      grepl("triglycerides", formula) ~ "TG",
+      grepl("log_insulin", formula) ~ "Insulin",
+      grepl("log_HOMA", formula) ~ "HOMA-IR",
+      grepl("HbA1c", formula) ~ "HbA1c",
+      grepl("log_glucose", formula) ~ "Glucose",
+      grepl("log_cpeptid_2015", formula) ~ "C-peptide",
+      grepl("hs_CRP", formula) ~ "hs-CRP",
+      grepl("leucocytes", formula) ~ "WBC",
+      grepl("bp_sys_z",formula) ~ "SBP SDS",
+      grepl("bp_dia_z",formula) ~ "DBP SDS",
+      grepl("glucagon", formula) ~ "Glucagon",
+      grepl("glp1", formula) ~ "Total GLP-1",
+      grepl("leptin_receptor_SSI", formula) ~ "LEPR",
+      grepl("leptin", formula) ~ "Leptin",
+      grepl("log_adiponectin", formula) ~ "Adiponectin",
+      )) %>%
+       dplyr::group_by(Outcome) %>% 
+     dplyr::mutate(fdr_pval = p.adjust (pvalue, method='fdr')) %>% 
+     dplyr::mutate(label_char_fdr = case_when(pvalue >= 0.05 ~ " ",
+                                 pvalue < 0.05 & fdr_pval >= 0.05 ~ "*",
+                                 fdr_pval < 0.05 ~ "+")) %>%
+  # Define cardiometabolic trait classes
+  dplyr::mutate(Outcome_class = case_when(
+  Outcome %in% c("Liver Fat %", "ALT","AST", "ALP","GGT","LDH","Bilirubin") ~ "Liver",
+  Outcome %in% c("HDL-C", "LDL-C", "TC","TG") ~ "Lipid",
+  Outcome %in% c("C-peptide", "HOMA-IR","Insulin", "Glucose", "HbA1c") ~ "Glycemic", 
+  Outcome %in% c("hs-CRP", "WBC") ~ "Inflammatory",
+  Outcome %in% c("Glucagon", "Total GLP-1", "Adiponectin", "Leptin", "LEPR", "TSH", "T4") ~ "Hormones",
+  Outcome %in% c("DBP SDS", "SBP SDS") ~ "Blood pressure"))
+
+```
+
+## Plot results
+```{r plotting}
+## Plot summary of protein-cardiometabolic trait associations
+min_associated_traits <- 2
+
+associations_per_proteins <- dplyr::filter(iv_all_population, pvalue < 0.05) %>%
+  group_by(protein, Outcome_class) %>% summarise(n_traits = n()) %>%
+  group_by(protein) %>%
+  mutate(total_traits = sum(n_traits)) %>%
+  ungroup()
+
+totals <- associations_per_proteins %>%
+  distinct(protein, total_traits)
+
+p <-ggplot(data = dplyr::filter(associations_per_proteins, total_traits >= min_associated_traits)) +
+  geom_bar(aes(fill=Outcome_class, x=reorder(protein, desc(total_traits)), y=n_traits), position = "stack", stat="identity") +
+ scale_fill_manual(values = c("Blood pressure" = "#d44c00", "Glycemic"= "#4a7c89", "Hormones" = "#a0c6d3" , "Inflammatory" = "#f4c251", "Lipid"="#e3ceab", "Liver"="#5ca50b")) +
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_text(data = dplyr::filter(totals, total_traits >= min_associated_traits),
+            aes(x = reorder(protein, desc(total_traits)),
+                y = total_traits,
+                label = total_traits),
+            vjust = -0.5, size = 3) +
+      labs(x = "Protein",
+       y = "Number of causally associations traits",
+       fill = NULL)  +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.1))
+  )
+
+ggsave("3_plots/summary_population_1SMR.png", plot = p, width = 7, height = 2.5, dpi = 300)
+
+## Plot selected protein-trait associations
+# MMP7 to Liver
+mmp7_liver = dplyr::filter(iv_all_population, protein == "MMP7", Outcome_class == "Liver") %>%
+  dplyr::mutate(fdr_plot = case_when(
+    label_char_fdr == "+" ~ "FDR < 5%",
+    label_char_fdr == "*" ~ "P < 0.05",
+    label_char_fdr == " " ~ "Not significant"
+  ))
+my_cols <- c(
+  "Not significant"  = "grey",
+  "P < 0.05"  = "black",
+  "FDR < 5%" = "#cc0000"
+)
+p <- ggplot(data = mmp7_liver, aes(x=beta, y=reorder(Outcome, desc(beta)), colour = fdr_plot)) +
+  geom_pointrange(aes(xmin=beta-1.98*se, xmax=beta+1.98*se)) +
+  geom_vline(xintercept = 0, linetype ="dashed") +
+  xlab("MR estimate (95% CI)") + 
+  ylab("Liver-related traits") +
+  xlim(-0.3, 0.55) +
+  theme_classic() +
+  scale_colour_manual(
+    name   = "Significance",
+    values = my_cols,
+    breaks = c("Not significant", "P < 0.05", "FDR < 5%")
+  ) 
+ggsave("3_plots/mmp7_liver.png", plot = p, width = 3.8, height = 3, dpi = 300)
+
+# MERTK to Liver
+mertk_liver = dplyr::filter(iv_all_population, protein == "MERTK", Outcome_class == "Liver") %>%
+  dplyr::mutate(Outcome = factor(Outcome, levels = c("Bilirubin", "ALP", "GGT", "ALT", "LDH", "AST"))) %>%
+  dplyr::mutate(fdr_plot = case_when(
+    label_char_fdr == "+" ~ "FDR < 5%",
+    label_char_fdr == "*" ~ "P < 0.05",
+    label_char_fdr == " " ~ "Not significant"
+  ))
+my_cols <- c(
+  "Not significant"  = "grey",
+  "P < 0.05"  = "black",
+  "FDR < 5%" = "#cc0000"
+)
+p <- ggplot(data = mertk_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
+  geom_pointrange(aes(xmin=beta-1.98*se, xmax=beta+1.98*se)) +
+  geom_vline(xintercept = 0, linetype ="dashed") +
+  xlab("MR estimate (95% CI)") + 
+  ylab("Liver-related traits") +
+  xlim(-0.3, 0.55) +
+  theme_classic() +
+  scale_colour_manual(
+    name   = "Significance",
+    values = my_cols,
+    breaks = c("Not significant", "P < 0.05", "FDR < 5%")
+  ) 
+ggsave("3_plots/mertk_liver.png", plot = p, width = 3.8, height = 3, dpi = 300)
+
+# MMP1 to Liver
+mmp1_liver = dplyr::filter(iv_all_population, protein == "MMP1", Outcome_class == "Liver") %>%
+  dplyr::mutate(Outcome = factor(Outcome, levels = c("Bilirubin", "ALP", "GGT", "ALT", "LDH", "AST"))) %>%
+  dplyr::mutate(fdr_plot = case_when(
+    label_char_fdr == "+" ~ "FDR < 5%",
+    label_char_fdr == "*" ~ "P < 0.05",
+    label_char_fdr == " " ~ "Not significant"
+  ))
+my_cols <- c(
+  "Not significant"  = "grey",
+  "P < 0.05"  = "black",
+  "FDR < 5%" = "#cc0000"
+)
+p <- ggplot(data = mmp1_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
+  geom_pointrange(aes(xmin=beta-1.98*se, xmax=beta+1.98*se)) +
+  geom_vline(xintercept = 0, linetype ="dashed") +
+  xlab("MR estimate (95% CI)") + 
+  ylab("Liver-related traits") +
+  xlim(-0.3, 0.55) +
+  theme_classic() +
+  scale_colour_manual(
+    name   = "Significance",
+    values = my_cols,
+    breaks = c("Not significant", "P < 0.05", "FDR < 5%")
+  ) 
+ggsave("3_plots/mmp1_liver.png", plot = p, width = 3.8, height = 3, dpi = 300)
+
+# ENRAGE to Blood pressure
+mmp1_liver = dplyr::filter(iv_all_population, protein == "ENRAGE", Outcome_class == "Blood pressure") %>%
+  dplyr::mutate(fdr_plot = case_when(
+    label_char_fdr == "+" ~ "FDR < 5%",
+    label_char_fdr == "*" ~ "P < 0.05",
+    label_char_fdr == " " ~ "Not significant"
+  ))
+my_cols <- c(
+  "Not significant"  = "grey",
+  "P < 0.05"  = "black",
+  "FDR < 5%" = "#cc0000"
+)
+p <- ggplot(data = mmp1_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
+  geom_pointrange(aes(xmin=beta-1.98*se, xmax=beta+1.98*se)) +
+  geom_vline(xintercept = 0, linetype ="dashed") +
+  xlab("MR estimate (95% CI)") + 
+  ylab("Blood pressure") +
+  #xlim(-0.3, 0.55) +
+  theme_classic() +
+  scale_colour_manual(
+    name   = "Significance",
+    values = my_cols,
+    breaks = c("Not significant", "P < 0.05", "FDR < 5%")
+  ) 
+ggsave("3_plots/enrage_bp.png", plot = p, width = 3.8, height = 1, dpi = 300)
+
+# IL15RA to Glycemic
+mmp1_liver = dplyr::filter(iv_all_population, protein == "IL15RA", Outcome %in% c("HOMA-IR","C-peptide", "Glucagon", "Bilirubin")) %>%
+  dplyr::mutate(fdr_plot = case_when(
+    label_char_fdr == "+" ~ "FDR < 5%",
+    label_char_fdr == "*" ~ "P < 0.05",
+    label_char_fdr == " " ~ "Not significant"
+  ))
+my_cols <- c(
+  "Not significant"  = "grey",
+  "P < 0.05"  = "black",
+  "FDR < 5%" = "#cc0000"
+)
+p <- ggplot(data = mmp1_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
+  geom_pointrange(aes(xmin=beta-1.98*se, xmax=beta+1.98*se)) +
+  geom_vline(xintercept = 0, linetype ="dashed") +
+  xlab("MR estimate (95% CI)") + 
+  ylab("Multiple traits") +
+  #xlim(-0.3, 0.55) +
+  theme_classic() +
+  scale_colour_manual(
+    name   = "Significance",
+    values = my_cols,
+    breaks = c("Not significant", "P < 0.05", "FDR < 5%")
+  ) +
+  scale_y_discrete(
+    limits = c("Bilirubin", "Glucagon","HOMA-IR", "C-peptide")
+  )
+ggsave("3_plots/il15ra_multicategory.png", plot = p, width = 3.8, height = 2, dpi = 300)
+```
+
+

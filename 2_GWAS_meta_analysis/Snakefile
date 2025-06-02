@@ -1,0 +1,189 @@
+localrules:
+	all
+
+configfile:	"config/config.nobmi.meta.yaml"
+
+rule all:
+	input:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.annotated"
+
+		
+## 1. Meta-analysis with METAL (release 2011-03-25)
+
+rule metal_stderr:
+	input:
+			population="../5_snakemake/results/1_population/{protein}.population.assoc.info.filtered.sample_size",
+			clinic="../5_snakemake/results/2_obesity_clinic/{protein}.obesity_clinic.assoc.info.filtered.sample_size"
+	output:
+			temporary("results/3_meta_analysis/{protein}.meta.stderr.assoc.info1.tbl")
+	params:
+			outfile="results/3_meta_analysis/{protein}.meta.stderr.assoc.info",
+			textlog="results/3_meta_analysis/{protein}.stderr.log"
+	shell:
+			"""
+	module load metal/2011-03-25
+	bash scripts/metal.stderr.sh {input.population} {input.clinic} {params.textlog} {params.outfile}
+	"""
+
+rule meta_create_chr_pos:
+	input:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.info1.tbl"
+	output:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.info.tbl"
+	shell:
+		"""
+		awk -F '\\t' 'FNR == 1 {{print $0 FS "chr" FS "pos";next}} {{split($1,a,":"); print $0 FS a[1] FS a[2] }}' {input} > {output}
+		"""
+rule meta_genome_wide:
+	input:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.info.tbl"
+	output:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide"
+	shell:
+		"""
+		protein_target={wildcards.protein}
+		protein_name=`echo {wildcards.protein} | sed 's/.*_\(nobmi\|bmi\)_//g'`
+		echo $protein_name
+		awk -F '\\t' -v my_var="$protein_name" 'FNR == 1 {{print $0 FS "genome_target" FS "protein_name";next}} $10 < 5e-8 {{print $0 FS "{wildcards.protein}" FS my_var}}' {input} > {output}
+		"""
+
+rule summarize_gw_data:
+	input:
+		expand("results/3_meta_analysis/{protein}.meta.stderr.assoc.genome_wide", protein=config['nobmi_proteins'])
+	output:
+		"results/3_meta_analysis/ALL.nobmi.meta.stderr.assoc.genome_wide.summary"
+	shell:
+		"""
+		>{output}
+		sed '/^MarkerName/d' {input} >> {output}
+		"""
+		
+## 2. Clumping meta-analysed summary statistics with PLINK
+rule preclump_MHC:
+	input:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide"
+	output:
+		temporary("results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.preclumped")
+	script:
+		"scripts/preclump_mhc_meta.R"
+
+rule clump_meta_p:
+	input:
+		"results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.preclumped"
+	output:
+		tmp=temporary("results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.tmp.clumped"),
+		clumped="results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.clumped",
+		log=temporary("results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.tmp.log"),
+		nosex=temporary("results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.tmp.nosex")
+	params:
+		# this is added, because plink adds the .clumped prefix automatically
+		outfile="results/3_meta_analysis/{protein}.meta{meta_scheme}.assoc.genome_wide.tmp"
+	shell:
+		"""
+		module load plink/1.9.0
+		echo ' CHR    F               SNP         BP        P    TOTAL   NSIG    S05    S01   S001  S0001    SP2' > {output.tmp}
+		plink --bfile /projects/holbaek-AUDIT/people/kmd383/0_data/1_genetics/plink/holbaek.autosomes.maf0_01.info_0.7.plink1/autosomes \
+			--clump-p1 5e-8 \
+			--maf 0.01 \
+			--clump-r2 0.2 --clump-kb 500 \
+			--clump-snp-field 'MarkerName' \
+			--clump-field 'P-value' \
+			--clump {input} \
+			--out {params.outfile}
+		protein_target={wildcards.protein}
+		protein_name=`echo {wildcards.protein} | sed 's/.*_\(nobmi\|bmi\)_//g'`
+		grep -v -e '^$' {output.tmp} | \
+		awk -F '\\t' -v my_var="$protein_name" 'FNR == 1 {{print $0 FS "genome_target" FS "protein_name";next}} {{print $0 FS "{wildcards.protein}" FS my_var}}' > {output.clumped} 
+		"""
+
+rule summarize_clumped_data:
+	input:
+		expand("results/3_meta_analysis/{protein}.meta.stderr.assoc.genome_wide.clumped", protein=config['nobmi_proteins'])
+	output:
+		"results/3_meta_analysis/ALL.nobmi.meta.stderr.assoc.genome_wide.clumped.summary"
+	shell:
+		"""
+		>{output}
+		sed 's/ \{{1,\}}/\t/g' {input} | \
+			sed 's/^\t//g' | \
+			sed '/^CHR/d' | \
+			awk '(NF > 1) {{print $0}}' >> {output}
+		"""
+
+## 3. Further annotating clumped data (TSS, cis/trans, VEP)
+
+rule clumped_effect_frequency:
+	input:
+		clumped="results/3_meta_analysis/ALL.nobmi.meta.stderr.assoc.genome_wide.clumped.summary",
+		gw="results/3_meta_analysis/ALL.nobmi.meta.stderr.assoc.genome_wide.summary"
+	output:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary"
+	shell:
+	# merge on variant name ($1,$3) and target name ($19, $13)
+		"""
+		echo 'MarkerName	Allele1	Allele2	Freq1	FreqSE	MinFreq	MaxFreq	Effect	StdErr	P-value	Direction	HetISq	HetChiSq	HetDf	HetPVal	TotalSampleSize	chr	pos	gwas_target	protein_name' > {output}
+		awk -F '\\t' 'NR==FNR{{a[$1$19]=$0;}} NR!=FNR{{print a[$3$13]}}' {input.gw} {input.clumped} >> {output}
+		"""
+
+rule merge_clumped_TSS:
+	input:
+		sumstats="results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary",
+		tss="data/olink_TSS.extended.txt"
+	output:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.tss"
+	shell:
+		"""
+		echo 'MarkerName	Allele1	Allele2	Freq1	FreqSE	MinFreq	MaxFreq	Effect	StdErr	P-value	Direction	HetISq	HetChiSq	HetDf	HetPVal	TotalSampleSize	chr	pos	gwas_target	protein_name	tss_chr	tss_position	uniprot_id' > {output}
+		awk -F '\\t' 'NR==FNR{{a[$5]=$4 FS $1 FS $3;}} NR!=FNR{{print $0 FS a[$20]}}' {input.tss} {input.sumstats} | awk 'NR!=1' >> {output} 
+		"""
+rule add_location:
+	input:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.tss"
+	output:
+		temporary("results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.tss.tmp")
+	shell:
+		"""
+		echo 'MarkerName	Allele1	Allele2	Freq1	FreqSE	MinFreq	MaxFreq	Effect	StdErr	P-value	Direction	HetISq	HetChiSq	HetDf	HetPVal	TotalSampleSize	chr	pos	gwas_target	protein_name	tss_chr	tss_position	uniprot_id	location' > {output}
+		awk -F '\\t' '{{split($1,a,":");}} (FNR != 1){{print $0 FS a[1]":"a[2]}}' {input} >> {output} 
+		"""
+rule calculate_cis_trans:
+	input:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.tss.tmp"
+	output:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.cis_trans"
+	script:
+		"scripts/cis_trans.R"
+
+## This one takes ~45 min
+rule call_vep:
+	input:
+		"results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.cis_trans"
+	output:
+		vcf = "results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.vcf",
+		vep_output = "results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.vep_output"
+	shell:
+		"""
+			module load --auto singularity
+			module load perl
+			echo '#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT' > {output.vcf}
+			awk -F '\\t' 'NR>1{{ print $17 FS $18 FS "." FS $3 FS $2 FS "." FS "." FS "." FS "."}}' {input} | sort -nk 1,2 > {output.vcf}
+			#singularity run /projects/holbaekz-AUDIT/people/kmd383/0_data/3_singularity/ensembl-vep:release_111.0.sif vep -i {output.vcf} -o {output.vep_output} -a GRCh37 --pick --database --format "vcf"
+			singularity run --bind /projects/holbaek-AUDIT/people/kmd383:/projects/holbaek-AUDIT/people/kmd383 /projects/holbaek-AUDIT/people/kmd383/0_data/3_singularity/ensembl-vep:release_111.0.sif \
+			vep -i {output.vcf} -o {output.vep_output} \
+		 	--cache --dir /projects/holbaek-AUDIT/people/kmd383/5__metal/data/1_vep_cache \
+		 	--offline --pick --format "vcf"
+		"""
+
+rule merge_vep:
+	input:
+		variants="results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.cis_trans",
+		annotations="results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.vep_output"
+	output:
+		merged = "results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.annotated",
+		annotations_no_header = temporary("results/3_meta_analysis/CLUMPED_ONLY.nobmi.meta.stderr.assoc.genome_wide.summary.vep_output.no_header")
+	shell:
+		"""
+			grep -v '##' {input.annotations} > {output.annotations_no_header}
+			echo 'MarkerName	Allele1	Allele2	Freq1	FreqSE	MinFreq	MaxFreq	Effect	StdErr	P-value	Direction	HetISq	HetChiSq	HetDf	HetPVal	TotalSampleSize	chr	pos	gwas_target	protein_name	tss_chr	tss_position	uniprot_id	location	cis_trans	vep_annotation' >> {output.merged}
+			awk -F '\\t' 'NR==FNR{{a[$2]=$7;}} NR!=FNR{{print $0 FS a[$24]}}' {output.annotations_no_header} {input.variants} | awk 'NR!=1' >> {output.merged}
+		"""

@@ -277,7 +277,6 @@ p <- ggplot(data = mmp1_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
   geom_vline(xintercept = 0, linetype ="dashed") +
   xlab("MR estimate (95% CI)") + 
   ylab("Blood pressure") +
-  #xlim(-0.3, 0.55) +
   theme_classic() +
   scale_colour_manual(
     name   = "Significance",
@@ -303,7 +302,6 @@ p <- ggplot(data = mmp1_liver, aes(x=beta, y=Outcome, colour = fdr_plot)) +
   geom_vline(xintercept = 0, linetype ="dashed") +
   xlab("MR estimate (95% CI)") + 
   ylab("Multiple traits") +
-  #xlim(-0.3, 0.55) +
   theme_classic() +
   scale_colour_manual(
     name   = "Significance",

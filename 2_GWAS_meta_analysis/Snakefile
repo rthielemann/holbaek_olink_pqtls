@@ -9,7 +9,6 @@ rule all:
 
 		
 ## 1. Meta-analysis with METAL (release 2011-03-25)
-
 rule metal_stderr:
 	input:
 			population="../5_snakemake/results/1_population/{protein}.population.assoc.info.filtered.sample_size",
@@ -111,7 +110,6 @@ rule summarize_clumped_data:
 		"""
 
 ## 3. Further annotating clumped data (TSS, cis/trans, VEP)
-
 rule clumped_effect_frequency:
 	input:
 		clumped="results/3_meta_analysis/ALL.nobmi.meta.stderr.assoc.genome_wide.clumped.summary",

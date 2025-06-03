@@ -73,14 +73,13 @@ obclinic_snp_all <- data.frame()
 obclinic_folder_local <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/'
 protein_local_files <- list.files(obclinic_folder_local, pattern = '.*info.filtered.sample_size.*')
 population_strongest_pve <- population_strongest_pve %>% dplyr::filter(!str_detect(protein_name, "_inf"))
-for (protein in unique(population_strongest_pve$protein_name)){#c("Q9GZV9")){
+for (protein in unique(population_strongest_pve$protein_name)){
   chromosome <- dplyr::filter(population_strongest_pve, protein_name == protein) %>% dplyr::select(chr)
   matches <- str_extract(protein_local_files, pattern = paste0('^',protein, "\\.obesity_clinic.assoc.info.filtered.sample_size.chr",chromosome$chr )) 
   ## remove NAs
   protein_folder <- paste0(obclinic_folder_local, na.omit(matches)[1])
   print(protein_folder)
-  ## get chromosome for strongest pve2
-  
+  ## get chromosome for strongest pve
   obclinic_pqtls <- readr::read_tsv(paste0(protein_folder), show_col_types = FALSE)
   
   population_pqtls_1 <- population_strongest_pve %>%
@@ -101,12 +100,10 @@ write_tsv(obclinic_snp_all, '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæ
 ```{r replication}
 population_genome_wide_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/ALL.population.nobmi.assoc.genome_wide.summary' ,col_names=TRUE, delim="\t", show_col_types = FALSE) %>%
   dplyr::rename(pos = ps)
-## ATTENTION: added study-wide filter here ##
-obclinic_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/CLUMPED_ONLY.obesity_clinic.nobmi.assoc.genome_wide.summary.cis_trans', col_names=TRUE, delim="\t", show_col_types = FALSE) 
+obclinic_SNPs <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/CLUMPED_ONLY.obesity_clinic.nobmi.assoc.genome_wide.summary.cis_trans', col_names=TRUE, delim="\t", show_col_types = FALSE) %>%
+  dplyr::filter(p_wald < 2.82*10^-10)
 
-## Compare to Study_wide population ##
-
-#Filter for phenotype and chromosome
+## Compare to study-wide population SNPs ##
 replication2 <- obclinic_SNPs %>%
   left_join(.,population_SNPs, by='protein_name') %>% 
   mutate(same_chr = ifelse((chr.x==chr.y), 1, 0)) %>%
@@ -117,13 +114,12 @@ replication2  <- replication2 %>%
   distinct_at(vars('CHROM:POS:REF:ALT.x',protein_name), .keep_all = T) %>%
   mutate(within1000kb=ifelse((abs(pos.x-pos.y)<=1000000 & same_chr == 1), "yes", "no" ))
 
-## Separate hits
+## Save new hits
 replicatedhits2 <- replication2 %>% filter(within1000kb == 'yes')
 newhits2 <- replication2 %>% filter(within1000kb == 'no' | is.na(within1000kb))
 
 ## Compare to genome wide, unclumped populatoion ##
 replication3 <- obclinic_SNPs %>%
-  ###keep gong here
   left_join(.,population_genome_wide_SNPs, by='protein_name') %>% 
   mutate(same_chr = ifelse((chr.x==chr.y), 1, 0)) %>%
   mutate(pos_distance = abs(pos.x-pos.y)) %>%
@@ -133,33 +129,27 @@ replication3  <- replication3 %>%
   distinct_at(vars('CHROM:POS:REF:ALT.x',protein_name), .keep_all = T) %>%
   mutate(within1000kb=ifelse((abs(pos.x-pos.y)<=1000000 & same_chr == 1), "yes", "no" ))
 
-## Separate hits
+## Save new hits
 replicatedhits3 <- replication3 %>% filter(within1000kb == 'yes')
 newhits3 <- replication3 %>% filter(within1000kb == 'no' | is.na(within1000kb))
-
 
 ggplot(replicatedhits2, aes(x=pos_distance)) + geom_histogram() + xlim(0,1000000)
 ```
 
 ## Merge lead cis-pQTLs from both cohorts 
 ```{r add_newhits3}
-## This code extracts the 3 SNPs which are only significant in obesity_clinic to add them to the comparison dataframe ##
+## Extracts SNPs which are only significant in obesity_clinic to add them to the comparison dataframe ##
 ## Tests if file exists already and only creates it if it doesn't
 if (!file.exists('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/population_snps.tsv')){
   population_snp_all <- data.frame()
   newhits3_folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/'
   protein_local_files <- list.files(newhits3_folder, pattern = '.*population.assoc.info.filtered.sample_size')
   newhits3 <- newhits3 %>% dplyr::filter(!str_detect(protein_name, "_inf")) %>% dplyr::select('CHROM:POS:REF:ALT.x':cis_trans)
-  #setwd("/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/")
-  for (protein in unique(newhits3$protein_name)){#c("Q9GZV9")){
-    print(protein)
+  for (protein in unique(newhits3$protein_name)){
     matches <- str_extract(protein_local_files, pattern = paste0('^',protein, "\\.population.assoc.info.filtered.sample_size")) 
-    
-    print(matches)
     ## remove NAs
     protein_folder <- paste0(newhits3_folder, na.omit(matches)[1])
-    print(protein_folder)
-    ## get chromosome for strongest pve2
+    ## get chromosome for strongest pve
     
     population_pqtls <- readr::read_tsv(paste0(protein_folder), show_col_types = FALSE)
     
@@ -179,24 +169,23 @@ if (!file.exists('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_compari
  population_snp_all <- read_delim('/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/data/3_obclinic_comparison/population_newhits/population_snps.tsv' ,col_names=TRUE, delim="\t", show_col_types = FALSE)
 }
 
-## adjust the study-wide significant SNPs in the population
+## Format the study-wide significant SNPs in the population
 obclinic_snp_all_ <-  obclinic_snp_all %>%
   dplyr::rename(af_obclinic = af, beta_obclinic = beta , se_obclinic = se , p_wald_obclinic = p_wald, sample_size_obclinic = sample_size )
 population_strongest_pve_ <-  population_strongest_pve %>%
   dplyr::rename(af_population = af , beta_population = beta , se_population = se , p_wald_population = p_wald, sample_size_population = sample_size )
 
-## adjust the 3 study-wide significant SNPs in the obesity clinic
+## Format study-wide significant SNPs in the obesity clinic
 newhits3_ <- newhits3 %>%
   dplyr::rename('CHROM:POS:REF:ALT'= 'CHROM:POS:REF:ALT.x', chr = chr.x, rs = rs.x, ps = pos.x, n_miss = n_miss.x, allele1 = allele1.x, allele0 = allele0.x,
                 af = af.x, beta = beta.x, se = se.x, logl_H1 = logl_H1.x, l_remle = l_remle.x, p_wald = p_wald.x, INFO = INFO.x, sample_size = sample_size.x,
                 genome_target = genome_target.x) %>%
-  dplyr::rename(af_obclinic = af, beta_obclinic = beta , se_obclinic = se , p_wald_obclinic = p_wald, sample_size_obclinic = sample_size) #%>%
-  #dplyr::select(-any_of(c('genome_target','tss_chr', 'tss_position', 'uniprot_id', 'spdi', 'cis_trans')))
+  dplyr::rename(af_obclinic = af, beta_obclinic = beta , se_obclinic = se , p_wald_obclinic = p_wald, sample_size_obclinic = sample_size) 
 population_snp_all_ <-  population_snp_all %>%
   dplyr::rename(af_population = af , beta_population = beta , se_population = se , p_wald_population = p_wald, sample_size_population = sample_size )
 population_snps <- dplyr::bind_rows(population_snp_all_, population_strongest_pve_)
 obclinic_snps <- dplyr::bind_rows(newhits3_, obclinic_snp_all_)
-## make comparison df
+## Merge into final dataframe for comparison
 comparison <- left_join(population_snps, obclinic_snps, by = c('CHROM:POS:REF:ALT','protein_name')) %>%
   unite(cis_trans, cis_trans.x, cis_trans.y, na.rm = TRUE) %>%
   dplyr::mutate(af_delta = af_population - af_obclinic) %>%
@@ -223,13 +212,11 @@ se_mult <- 1.96
 comparison <- comparison %>% filter(!grepl('_inf', protein_name))
 folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/obclinic_comparison/'
 comparison <- comparison %>%
-  # yes, if confidence interval snot overlapping
   dplyr::mutate(beta_significant = case_when(
     (beta_population + se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population + se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
     (beta_population - se_mult * se_population > beta_obclinic - se_mult * se_obclinic & beta_population - se_mult * se_population < beta_obclinic + se_mult * se_obclinic) ~ "no",
     TRUE ~ "yes"
   ))
-
 
 ## BAR PLOT, PVE: cis only ## 
 ggplot(filter(comparison, cis_trans=='cis')) + ggtitle("PVE, cis only") +
@@ -238,10 +225,8 @@ ggplot(filter(comparison, cis_trans=='cis')) + ggtitle("PVE, cis only") +
     geom_errorbar(aes(x=reorder(protein_name, -pve_population), y=-pve_population, ymin=-pve_population, ymax = -pve_population), , color="black") +
     geom_errorbar(aes(x=reorder(protein_name, -pve_population), y=pve_population, ymin=pve_population, ymax = pve_population), , color="black") +
   theme_linedraw(base_size = 15) +
-  #theme_bw(base_size=15) + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.line = element_line(colour = "black")) + 
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
-
 ggsave(paste0(folder, "comparison_pve_bar_cis_only.png"), device='png', width=45, height=30, dpi=300, units="cm")
 
 ## Scatterplot allele frequencies
@@ -270,12 +255,9 @@ ggsave(paste0(folder, "holbaek3_horizontal.png"), device='png', width=7.2, heigh
 ## Scatterplot BETA with heterogenetity p-values from METAL
 ```{r include_metal_data}
 metal_population_obclinic <- readr::read_tsv('/Users/kmd383/holbaek/5__metal/results/3_meta_analysis/summary.meta.stderr.fdr_lead_cis_pqtls.p_val', show_col_types = FALSE)
-
 metal_population_obclinic <- metal_population_obclinic %>% dplyr::mutate(HetPVal_category = case_when(p_fdr_heterogeneity < 0.05 ~ 'fdr p < 0.05',HetPVal < 0.05 ~ 'nominal p < 0.05',.default = 'not significant')) 
-
 comparison_het <- dplyr::inner_join(comparison, metal_population_obclinic %>% dplyr::select(MarkerName, protein_name, HetPVal, HetPVal_category), by = join_by(`CHROM:POS:REF:ALT` == MarkerName, protein_name == protein_name))
 
-## Add the old beta_significant values ##
 se_mult = 1.98
 folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/obclinic_comparison/'
 comparison_het <- comparison_het %>%
@@ -434,7 +416,7 @@ ggsave(output_ggplot, plot=p, device='png',width=14, height=8, dpi=300, units="c
 ## currently running for downsampled not_obese (n~8000)
 not_obese_snp_all <- data.frame()
 obese_snp_all <- data.frame()
-## select isgnificant proteins
+## select relevant proteins
 zoom_proteins <- comparison %>% 
   dplyr::filter(protein_name %in% c("PIgR", "IL1ra", "TRANCE", "SPON2", "CXCL10")) %>%
   dplyr::mutate(protein_name_long = gsub("\\..*", "", gsub(".*/", "", genome_target))) %>%
@@ -578,7 +560,6 @@ se_mult <- 1.96
 replication_obesity <- replication_obesity %>% filter(!grepl('_inf', protein_name))
 folder <- '/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/1_comparison/plots/11_ukb_obesity_replication/'
 replication_obesity <- replication_obesity %>%
-  # yes, if confidence interval snot overlapping
   dplyr::mutate(beta_significant = case_when(
     (beta_not_obese + se_mult * se_not_obese > beta_obese - se_mult * se_obese & beta_not_obese + se_mult * se_not_obese < beta_obese + se_mult * se_obese) ~ "no",
     (beta_not_obese - se_mult * se_not_obese > beta_obese - se_mult * se_obese & beta_not_obese - se_mult * se_not_obese < beta_obese + se_mult * se_obese) ~ "no",
@@ -599,7 +580,7 @@ p <- ggplot(data = replication_obesity, aes(x=beta_obese, y=beta_not_obese, colo
 plot(p)
 ggsave(paste0(folder, "replication_obesity_beta_scatter_cis.downsampled.png"), device='png', dpi=300)
 
-## Significant 30
+##  Plot beta values of selected proteins
 ggplot(replication_obesity %>% dplyr::filter(protein_name != "spon2")) +
   geom_pointrange(aes(x=abs(beta_not_obese), y=reorder(protein_name, abs(beta_not_obese)), xmin=abs(beta_not_obese) - se_mult*se_not_obese, xmax=abs(beta_not_obese) + se_mult*se_not_obese, color = "UKB not obese (BMI < 30)"), position = position_nudge(y = -0.05)) +
   geom_pointrange(aes(x=abs(beta_obese), y=reorder(protein_name, abs(beta_not_obese)), xmin=abs(beta_obese) - se_mult*se_obese, xmax=abs(beta_obese) + se_mult*se_obese,  color = "UKB obese (BMI > 30)"), position = position_nudge(y = 0.05)) + 

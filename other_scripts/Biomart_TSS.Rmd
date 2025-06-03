@@ -1,0 +1,89 @@
+---
+title: "Biomart_TSS"
+author: "Roman Thielemann"
+date: "2024-03-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(biomaRt)
+library(liftOver)
+library(GenomicRanges)
+library(rtracklayer)
+```
+
+## Retrieve transcript information from Ensembl BioMart Release 113
+``` {r biomart}
+## load uniprots from file
+uniprots <- read_csv("/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/Olink/uniprots.csv") %>% unique()
+
+## Connect to Ensembl
+ensembl113_hg38 <- useEnsembl(
+  biomart = "genes",
+  dataset   = "hsapiens_gene_ensembl"
+)
+## Define attributes
+attributes <- listAttributes(ensembl113_hg38)
+attrs <- c(
+  "uniprotswissprot",
+  "ensembl_gene_id",
+  "chromosome_name",
+  "ensembl_transcript_id",
+  "external_gene_name",
+  "transcript_length",
+  "transcription_start_site",
+  "transcript_is_canonical"
+)
+## Get attributes from biomart
+res <- getBM(
+  attributes = attrs,
+  filters    = "uniprotswissprot",
+  values     = other_uniprots,
+  mart       = ensembl113_hg38
+)
+
+## Select the canonical transcript on primary chromosomes
+canonical_tss <- as.tibble(res) %>% 
+  dplyr::filter(chromosome_name %in% c(1:22,"X")) %>%
+  dplyr::mutate(transcript_is_canonical = replace_na(transcript_is_canonical, 0)) %>%
+  group_by(uniprotswissprot) %>%
+  # first keep only the highest canonical‐flag (1 if present, else 0)
+  filter(transcript_is_canonical == max(transcript_is_canonical)) %>%
+  # then keep only the longest transcript
+  filter(transcript_length == max(transcript_length)) %>%
+  ungroup()
+```
+## Lift chromosome positions to hg19
+```{r}
+path = system.file(package="liftOver", "extdata", "hg38ToHg19.over.chain")
+ch = import.chain(path)
+
+## Dataframe with hg38 positions to convert to hg19
+input_data <- canonical_tss 
+
+## Format dataframe
+colnames(input_data)[colnames(input_data) == "chromosome_name"] <- "seqnames" #change chr to seqnames
+colnames(input_data)[colnames(input_data) == "transcription_start_site"] <- "start" # rename position to start
+input_data$end <- input_data$start # Add an end column
+input_data$seqnames <- paste("chr", input_data$seqnames, sep="") #chr variable needs chr before number
+
+## Perform liftover
+grObject <- GenomicRanges::makeGRangesFromDataFrame(input_data, seqnames.field = "seqnames",
+                                                    start.field = "start", end.field = "end",
+                                                    keep.extra.columns = TRUE)
+
+canonical_tss_to_hg19 <- as.data.frame(liftOver(grObject, ch)) %>% 
+  dplyr::rename(chr_tss_hg19 = seqnames,
+                tss_hg19 = start) %>% 
+  dplyr::mutate(chr_tss_hg19 = gsub("chr", "", chr_tss_hg19)) %>%
+  dplyr::select(-group, -group_name, -end, -width, -strand) 
+
+canonical_tss_to_hg19 <- dplyr::left_join(canonical_tss_to_hg19, dplyr::select(canonical_tss, uniprotswissprot,transcription_start_site, chromosome_name) %>%
+                                            dplyr::rename(tss_hg38 = transcription_start_site, tss_chr_hg38 = chromosome_name), by = "uniprotswissprot")
+
+write_tsv(canonical_tss_to_hg19, "results/canonical_tss.tsv")
+```
+
+

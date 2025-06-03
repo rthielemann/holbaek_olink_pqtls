@@ -1,0 +1,232 @@
+---
+title: "Olink_QC"
+author: "Roman Thielemann"
+date: "2023-02-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(OlinkAnalyze)
+```
+
+```{r load_olink, results='hide', fig.show='hide', message=FALSE, warning=FALSE}
+## LOAD CVDII DATA - BATCH 1
+CVDB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20191262_Stinson_NPX.xlsx"))
+## LOAD INF DATA - BATCH 1
+INFB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20210107_Stinson_NPX.xlsx"))
+## LOAD CVDII + INF DATA - BATCH 2
+B2_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20202245_Stinson_NPX.xlsx"))
+## LOAD MICROBLIVER RERUNS - BATCH 3
+MLRR_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20212246_Juel_NPX.xlsx"))
+## LOAD BRIDGE KEY
+bridge_key <- read.table(file = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/bridge_key.txt"), header = T)
+```
+```{r cvd_batch2}
+## Select CVDII Panel from Batch 2
+CVDB2_NPX_data <- B2_NPX_data %>% dplyr::filter(Panel == 'Olink Cardiovascular II')
+## Add Project Numbers
+CVD_npx_df1 <- CVDB1_NPX_data %>% dplyr::mutate(Project = '20191262')
+CVD_npx_df2 <- CVDB2_NPX_data %>% dplyr::mutate(Project = '20202245')
+## Identify Bridging Samples
+overlap_samples <- intersect((CVD_npx_df1 %>% filter(!grepl("control", SampleID, ignore.case=T)))$SampleID,
+                             (CVD_npx_df2 %>% filter(!grepl("control", SampleID, ignore.case=T)))$SampleID)
+## CVDII Bridge Normalization
+CVD_bridge <- OlinkAnalyze::olink_normalization(
+  df1 = CVD_npx_df1,
+  df2 = CVD_npx_df2,
+  overlapping_samples_df1 = overlap_samples,
+  df1_project_nr = '20191262',
+  df2_project_nr = '20202245',
+  reference_project = '20202245' # Bridge using the larger batch
+)
+```
+
+
+```{r inf_batch2}
+## Select INF Panel from Batch 2
+INFB2_NPX_data <- B2_NPX_data %>% dplyr::filter(Panel == 'Olink Inflammation')
+## Add Project Numbers
+INF_npx_df1 <- INFB1_NPX_data %>% dplyr::mutate(Project = '20210107')
+INF_npx_df2 <- INFB2_NPX_data %>% dplyr::mutate(Project = '20202245')
+## Identify Bridging Samples
+overlap_samples <- intersect((INF_npx_df1 %>% filter(!grepl("control", SampleID, ignore.case=T)))$SampleID,
+                             (INF_npx_df2 %>% filter(!grepl("control", SampleID, ignore.case=T)))$SampleID)
+## INF Bridge Normalization
+INF_bridge <- OlinkAnalyze::olink_normalization(
+  df1 = INF_npx_df1,
+  df2 = INF_npx_df2,
+  overlapping_samples_df1 = overlap_samples,
+  df1_project_nr = '20210107',
+  df2_project_nr = '20202245',
+  reference_project = '20202245' # Bridge using the larger batch
+)
+```
+
+```{r inf_cvd_reruns}
+## Removing Other MicrobLiver Cohorts
+MLRR_NPX_data <- MLRR_NPX_data[!grepl("RDC", MLRR_NPX_data$SampleID),] # Remove RDC Samples
+MLRR_NPX_data <- MLRR_NPX_data[!grepl("PRF", MLRR_NPX_data$SampleID),] # Remove PRF samples
+## Add Bridge Key
+MLRRb_NPX_data <- full_join(MLRR_NPX_data, bridge_key, by = "SampleID")
+## Add Project Number and Format
+MLRRb_NPX_data <- MLRRb_NPX_data %>%
+  dplyr::mutate(SampleID = coalesce(OGSampleID, SampleID)) %>%
+  dplyr::select(-OGSampleID) %>%
+  dplyr::mutate(Project = '20212246') %>%
+  dplyr::mutate(SampleID = gsub("HOL-", "", SampleID)) %>%
+  dplyr::mutate(SampleID = gsub("-RR", "", SampleID))
+## Identify Bridge Samples
+bridge_samples <- bridge_key$OGSampleID
+## Select CVDII Panel from Reruns
+CVD_npx_df3 <- MLRRb_NPX_data %>%
+  dplyr::filter(Panel == 'Olink Cardiovascular II')
+## CVDII Rerun Bridge Normalization
+CVDRR_bridge <- OlinkAnalyze::olink_normalization(
+  df1 = CVD_npx_df3,
+  df2 = CVD_npx_df2,
+  overlapping_samples_df1 = bridge_samples,
+  df1_project_nr = '20212246',
+  df2_project_nr = '20202245',
+  reference_project = '20202245' # Bridge using the larger batch
+)
+CVDRR <- CVDRR_bridge %>%
+  dplyr::filter(Project == '20212246')
+## Remove Bridge Samples
+CVDrr_bridge <- dplyr::filter(CVDRR, (!SampleID %in% bridge_samples))
+## Select INF Panel from Reruns
+INF_npx_df3 <- MLRRb_NPX_data %>%
+  dplyr::filter(Panel == 'Olink Inflammation')
+## INF Rerun Bridge Normalization
+INFRR_bridge <- OlinkAnalyze::olink_normalization(
+  df1 = INF_npx_df3,
+  df2 = INF_npx_df2,
+  overlapping_samples_df1 = bridge_samples,
+  df1_project_nr = '20212246',
+  df2_project_nr = '20202245',
+  reference_project = '20202245'
+)
+INFRR <- INFRR_bridge %>%
+  dplyr::filter(Project == '20212246')
+## Remove Bridge Samples
+INFrr_bridge <- dplyr::filter(INFRR_bridge, (!SampleID %in% bridge_samples))
+```
+
+```{r merge_cvd}
+## Merge CVDII Panel Batches
+merge_CVD_panels <- CVD_bridge %>%
+  dplyr::full_join(CVDrr_bridge) %>%
+  dplyr::mutate(Assay = gsub("-", "", Assay)) %>%
+  dplyr::mutate(Assay = gsub(" ", "_", Assay)) %>%
+  dplyr::mutate(Assay = gsub("alpha", "a", Assay)) %>%
+  dplyr::mutate(Assay = gsub("beta", "b", Assay)) %>%
+  dplyr::mutate(Assay = gsub("gamma", "g", Assay))
+```
+
+```{r qc_plot_cvd}
+## QC plot
+OlinkAnalyze::olink_qc_plot(merge_CVD_panels)
+```
+
+```{r cvd_qc}
+## Apply QC
+# Include proteins below LOD for pQTL study
+CVD_qc <- merge_CVD_panels %>%
+  dplyr::filter(QC_Warning != "Warning") %>%
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>%
+  dplyr::group_by(Assay) %>%
+  dplyr::mutate(MissingFreq = (as.numeric(MissingFreq))) %>%
+  dplyr::mutate(no_missing_obs = sum(is.na(NPX) | NPX < LOD),
+                total_obs = length(NPX)) %>%
+  dplyr::mutate(GlobMissFreq = no_missing_obs / total_obs) #%>% # calculates the global MissingFreq
+  #dplyr::filter(GlobMissFreq <= 0.20) # Removes proteins with more than 20 % global MissingFreq
+## Convert from long to wide format
+CVD_wide <- CVD_qc %>%
+  dplyr::select(SampleID, Assay, PlateID, NPX, QC_Warning) %>%
+  pivot_wider(names_from = Assay,
+              values_from = NPX) %>%
+  dplyr::rename(plateID_CVDII = PlateID)
+```
+
+```{r merge_inf}
+## Merge INF Panel Batches
+merge_INF_panels <- INF_bridge %>%
+dplyr::full_join(INFrr_bridge) %>%
+dplyr::mutate(Assay = gsub("-", "", Assay)) %>%
+dplyr::mutate(Assay = gsub(" ", "_", Assay)) %>%
+dplyr::mutate(Assay = gsub("alpha", "a", Assay)) %>%
+dplyr::mutate(Assay = gsub("beta", "b", Assay)) %>%
+dplyr::mutate(Assay = gsub("gamma", "g", Assay))
+```
+
+```{r qc_plot_inf}
+## QC plot
+OlinkAnalyze::olink_qc_plot(merge_INF_panels)
+```
+
+```{r inf_qc}
+## Apply QC
+# Include proteins below LOD for pQTL study
+INF_qc <- merge_INF_panels %>%
+  dplyr::filter(QC_Warning != "Warning") %>%
+  dplyr::filter(!str_detect(SampleID, 'CONTROL_SAMPLE')) %>%
+  dplyr::group_by(Assay) %>%
+  dplyr::mutate(MissingFreq = (as.numeric(MissingFreq))) %>%
+  dplyr::mutate(no_missing_obs = sum(is.na(NPX) | NPX < LOD),
+                total_obs = length(NPX)) %>%
+  dplyr::mutate(GlobMissFreq = no_missing_obs / total_obs) %>% # calculates the global MissingFreq
+  dplyr::mutate(Assay = recode(Assay,
+                               IL6 = "IL6_inf",
+                               CXCL1 = "CXCL1_inf",
+                               SCF = "SCF_inf",
+                               IL18 = "IL18_inf",
+                               FGF21 = "FGF21_inf",
+                               FGF23 = "FGF23_inf",
+                               CCL3 = "CCL3_inf")
+  ) # %>%
+  #dplyr::filter(GlobMissFreq <= 0.20) # Removes proteins with more than 20 % global MissingFreq
+## Convert from long to wide format
+INF_wide <- INF_qc %>%
+  dplyr::select(SampleID, Assay, PlateID, NPX, QC_Warning) %>%
+  pivot_wider(names_from = Assay,
+              values_from = NPX) %>%
+  dplyr::rename(plateID_INF = PlateID)
+```
+
+```{r merge_cvd_inf}
+## Merge CVDII + INF Panels
+olink_df <- INF_wide %>%
+  dplyr::full_join(CVD_wide) %>%
+  dplyr::rename(blood_sample_ID = SampleID) %>%
+  dplyr::mutate(batch_INF = as.factor(str_extract(plateID_INF, '[^-]\\w+'))) %>%
+  dplyr::mutate(batch_CVDII = as.factor(str_extract(plateID_CVDII, '[^-]\\w+'))) %>%
+  dplyr::relocate(blood_sample_ID, batch_INF, batch_CVDII, plateID_INF, plateID_CVDII, QC_Warning) %>%
+  dplyr::mutate(plateID_INF = as.factor(plateID_INF),
+                plateID_CVDII = as.factor(plateID_CVDII),
+                QC_Warning = as.factor(QC_Warning)) %>%
+  dplyr::distinct(blood_sample_ID, .keep_all = TRUE)
+```
+
+```{r panel_metadata}
+## Creating a panel metadata file
+metadata <- INF_qc %>% # using the df in the long format
+  dplyr::full_join(CVD_qc) %>% # This is merging with the CVD panel
+  dplyr::group_by(Assay, Project) %>%
+  dplyr::select(UniProt, OlinkID, LOD, Panel, Panel_Version, MissingFreq, GlobMissFreq) %>% # These I think would be important to include
+dplyr::mutate(Panel = case_when(Panel == "Olink Cardiovascular II" ~ "CVDII",
+                                Panel == "Olink Inflammation" ~ "INF",
+                                TRUE ~ Panel)) %>%
+  dplyr::distinct(Assay, .keep_all = TRUE) %>% # This keeps one value for each protein in the long format
+  mutate_at(vars(MissingFreq, GlobMissFreq), funs(round(., 3))) %>%
+  arrange(Assay)
+knitr::kable(metadata)
+```
+
+```{r write_csv}
+## Save QC'd Data
+folder <- "/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/"
+write.table(olink_df, paste(folder,"qc-data-pQTLs/olink_CVDII_INF_baseline_plasma_wide_20.txt", sep=""), sep = "\t", quote = F)
+```
+
+

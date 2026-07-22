@@ -14,5 +14,9 @@ Folder                      | Description
 4_Mendelian_randomization | R markdown script to perform one-sample Mendelian randomization in the population cohort.
 other_scripts | Other relevant scripts (Olink proteomics QC, TSS extraction from Biomart)
 
+## Other resources
+- The pipeline for colocalisation analysis with GTEx eQTLs can be found here: https://github.com/Hansen-Group/GTEX_eqtl_colocalization
+
 ## Study design
 ![pQTL study overview](https://github.com/user-attachments/assets/f1b20bf4-e0bc-4cc0-8c69-9084d53adb2f)
+

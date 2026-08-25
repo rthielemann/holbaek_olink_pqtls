@@ -1,10 +1,3 @@
----
-title: "Olink_QC"
-author: "Roman Thielemann"
-date: "2023-02-06"
-output: html_document
----
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
@@ -13,15 +6,15 @@ library(OlinkAnalyze)
 
 ```{r load_olink, results='hide', fig.show='hide', message=FALSE, warning=FALSE}
 ## LOAD CVDII DATA - BATCH 1
-CVDB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20191262_Stinson_NPX.xlsx"))
+CVDB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("raw-data", "20191262_S_NPX.xlsx"))
 ## LOAD INF DATA - BATCH 1
-INFB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20210107_Stinson_NPX.xlsx"))
+INFB1_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("raw-data", "20210107_S_NPX.xlsx"))
 ## LOAD CVDII + INF DATA - BATCH 2
-B2_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20202245_Stinson_NPX.xlsx"))
+B2_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("raw-data", "20202245_S_NPX.xlsx"))
 ## LOAD MICROBLIVER RERUNS - BATCH 3
-MLRR_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/20212246_Juel_NPX.xlsx"))
+MLRR_NPX_data <- OlinkAnalyze::read_NPX(filename = here::here("raw-data", "20212246_J_NPX.xlsx"))
 ## LOAD BRIDGE KEY
-bridge_key <- read.table(file = here::here("/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/raw-data/bridge_key.txt"), header = T)
+bridge_key <- read.table(file = here::here("raw-data", "bridge_key.txt"), header = T)
 ```
 ```{r cvd_batch2}
 ## Select CVDII Panel from Batch 2
@@ -213,7 +206,7 @@ olink_df <- INF_wide %>%
 metadata <- INF_qc %>% # using the df in the long format
   dplyr::full_join(CVD_qc) %>% # This is merging with the CVD panel
   dplyr::group_by(Assay, Project) %>%
-  dplyr::select(UniProt, OlinkID, LOD, Panel, Panel_Version, MissingFreq, GlobMissFreq) %>% # These I think would be important to include
+  dplyr::select(UniProt, OlinkID, LOD, Panel, Panel_Version, MissingFreq, GlobMissFreq) %>% # Key metadata columns to include
 dplyr::mutate(Panel = case_when(Panel == "Olink Cardiovascular II" ~ "CVDII",
                                 Panel == "Olink Inflammation" ~ "INF",
                                 TRUE ~ Panel)) %>%
@@ -225,8 +218,6 @@ knitr::kable(metadata)
 
 ```{r write_csv}
 ## Save QC'd Data
-folder <- "/Volumes/auditing-groupdirs/SUN-CBMR-Childhood-Genetic-TCOC/olink/baseline-plasma/"
+folder <- "./"
 write.table(olink_df, paste(folder,"qc-data-pQTLs/olink_CVDII_INF_baseline_plasma_wide_20.txt", sep=""), sep = "\t", quote = F)
 ```
-
-

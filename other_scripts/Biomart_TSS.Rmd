@@ -1,10 +1,3 @@
----
-title: "Biomart_TSS"
-author: "Roman Thielemann"
-date: "2024-03-20"
-output: html_document
----
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
@@ -17,7 +10,7 @@ library(rtracklayer)
 ## Retrieve transcript information from Ensembl BioMart Release 113
 ``` {r biomart}
 ## load uniprots from file
-uniprots <- read_csv("/Users/kmd383/Documents/1_Kopenhagen/1_PhD/7_Holbæk/Olink/uniprots.csv") %>% unique()
+uniprots <- read_csv("uniprots.csv") %>% unique()
 
 ## Connect to Ensembl
 ensembl113_hg38 <- useEnsembl(
@@ -40,7 +33,7 @@ attrs <- c(
 res <- getBM(
   attributes = attrs,
   filters    = "uniprotswissprot",
-  values     = other_uniprots,
+  values     = uniprots,  
   mart       = ensembl113_hg38
 )
 
@@ -85,5 +78,3 @@ canonical_tss_to_hg19 <- dplyr::left_join(canonical_tss_to_hg19, dplyr::select(c
 
 write_tsv(canonical_tss_to_hg19, "results/canonical_tss.tsv")
 ```
-
-

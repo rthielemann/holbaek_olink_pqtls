@@ -11,6 +11,7 @@ gemma \
 -k holbaek.kinship.cXX.txt \
 -c covariates.csv \
 -lmm 1 \
+-maf 0.01 \
 -hwe 0.000001 \
 -o ${SLURM_ARRAY_TASK_ID}'_'${protein}'' \
 -n ${SLURM_ARRAY_TASK_ID}

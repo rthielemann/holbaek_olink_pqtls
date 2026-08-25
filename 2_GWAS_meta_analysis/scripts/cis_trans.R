@@ -16,3 +16,4 @@ df <- df %>%
 
     
 write_tsv(df, snakemake@output[[1]])
+

@@ -10,7 +10,7 @@ Folder                      | Description
 0_GEMMA | Simple example script of association testing with GEMMA.
 1_GWAS_processing_subcohorts |  Snakemake pipeline to process summary statistics in population-based cohort (n = 2,095) and obesity clinic cohort (n = 1,758).
 2_GWAS_meta_analysis | Snakemake pipeline to meta-analyse summary statistics from the population-based and obesity clinic cohorts (n=3,853). Annotation of meta-analysed summary statistics.
-3_Stratified_pQTL_analysis | R markdown script to perform obesity-stratified comparison of lead cis-pQTLs.
+3_Stratified_pQTL_analysis | R markdown script to perform obesity-stratified comparison of pQTLs.
 4_Mendelian_randomization | R scripts to perform proxy-identification, two-sample Mendelian randomization, and colocalisation between pQTLs and cardiometabolic outcomes.
 other_scripts | Other relevant scripts (Olink proteomics QC, TSS extraction from Biomart)
 
